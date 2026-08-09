@@ -66,7 +66,11 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         rs.Quests_ClaimQuest:FireServer(questId)
     end
 
-    -- Grabs the first quest in the list that isn't finished yet.
+    local QuestHandlers = {}
+
+    -- Grabs the first quest in the list that isn't finished yet AND has a
+    -- real handler written for it. Quests with no handler (still a TODO)
+    -- get skipped so the bot doesn't get stuck waiting on them forever.
     -- Along the way it also claims anything that's already done but
     -- hasn't been claimed yet (in case it finished on its own).
     local function GetNextIncompleteQuest(questIds)
@@ -76,9 +80,10 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                 local current, completed = GetProgress(questId)
                 if completed then
                     ClaimQuest(questId)
-                else
+                elseif QuestHandlers[questId] then
                     return questId, questData, current
                 end
+                -- no handler yet -> skip silently, keep looking
             end
         end
         return nil
@@ -100,8 +105,6 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     -- NOT block. The loop below handles waiting for progress and
     -- claiming the reward once GetQuestProgress says it's completed.
     -- ========================================================
-
-    local QuestHandlers = {}
 
     -- ============================================================
     -- DAILY QUESTS
@@ -481,6 +484,9 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     local Running = false
     local CurrentQuestId = nil
     local CheckInterval = 2
+    local StatusText = 'Idle'
+
+    local dailyStatusLabel, weeklyStatusLabel
 
     local function RunLoop(mode)
         runToken += 1
@@ -492,6 +498,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
             local questId, questData, current = GetNextIncompleteQuest(questIds)
 
             if not questId then
+                StatusText = 'All ' .. mode .. ' quests done!'
                 noti(mode .. ' Quests: all done!')
                 task.wait(5)
             else
@@ -502,30 +509,34 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                 local handler = QuestHandlers[questId]
 
                 if handler then
+                    StatusText = (questData.Name or questId) .. ' (0/' .. tostring(amount) .. ')'
                     local ok, err = pcall(handler, questData, amount)
                     if not ok then
                         warn('[Quests] Error in handler for ' .. questId .. ': ' .. tostring(err))
                     end
-                else
-                    DefaultHandler(questId, questData, amount)
-                end
 
-                while Running and myToken == runToken do
-                    local newCurrent, completed = GetProgress(questId)
-                    if completed then
-                        if handler then
+                    while Running and myToken == runToken do
+                        local newCurrent, completed = GetProgress(questId)
+                        StatusText = (questData.Name or questId) .. ' (' .. tostring(newCurrent or 0) .. '/' .. tostring(amount) .. ')'
+                        if completed then
                             pcall(StopCurrentAction, questId, questData)
+                            ClaimQuest(questId)
+                            break
                         end
-                        ClaimQuest(questId)
-                        break
+                        task.wait(CheckInterval)
                     end
-                    task.wait(CheckInterval)
+                else
+                    -- No handler (or still a TODO) - skip this quest and
+                    -- move straight to the next one instead of hanging forever
+                    DefaultHandler(questId, questData, amount)
+                    task.wait(1)
                 end
             end
         end
 
         if myToken == runToken then
             Running = false
+            StatusText = 'Idle'
         end
     end
 
@@ -559,6 +570,9 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         end,
     })
 
+    DailyQuestsTab:AddDivider()
+    dailyStatusLabel = DailyQuestsTab:AddLabel('Status: Idle')
+
     -- ========================================================
     -- Weekly Tab
     -- ========================================================
@@ -576,4 +590,23 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
             end
         end,
     })
+
+    WeeklyQuestsTab:AddDivider()
+    weeklyStatusLabel = WeeklyQuestsTab:AddLabel('Status: Idle')
+
+    -- Keeps the status label on the active tab updated
+    task.spawn(function()
+        while true do
+            if Running and CurrentQuestId then
+                local label = (Toggles.autoDailyQuests and Toggles.autoDailyQuests.Value) and dailyStatusLabel or weeklyStatusLabel
+                if label and label.SetText then
+                    label:SetText('Status: ' .. StatusText)
+                end
+            else
+                if dailyStatusLabel and dailyStatusLabel.SetText then dailyStatusLabel:SetText('Status: Idle') end
+                if weeklyStatusLabel and weeklyStatusLabel.SetText then weeklyStatusLabel:SetText('Status: Idle') end
+            end
+            task.wait(1)
+        end
+    end)
 end)()
