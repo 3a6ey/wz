@@ -8,6 +8,12 @@
 -- script's local variable count (avoids "Out of local registers").
 -- This module creates its own Tabs.Quests tab and tabbox - you
 -- don't need to declare anything for it in your main script.
+--
+-- IMPORTANT: the game hands out quests from a big pool of random
+-- numeric IDs (not a fixed set), so quests are matched by their
+-- CONTENT (mob name / world / dungeon id / event key) instead of
+-- by their numeric ID. That's what all the *Handlers tables below
+-- are for.
 -- ============================================================
 
 local plr, rs, Window, Tabs, Toggles, noti = ...
@@ -66,10 +72,269 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         rs.Quests_ClaimQuest:FireServer(questId)
     end
 
-    local QuestHandlers = {}
+    -- ========================================================
+    -- HANDLERS — THIS IS WHERE YOU PUT YOUR OWN CODE
+    -- --------------------------------------------------------
+    -- Quests are matched by CONTENT, not by their numeric ID
+    -- (the game randomly assigns IDs from a big pool, so a fixed
+    -- id -> handler map doesn't work). Each table below is keyed
+    -- by whatever actually identifies the quest: mob name, world
+    -- number, dungeon id, or custom event key.
+    -- ========================================================
+
+    -- KillMob / KillMobInWorld / KillAnyMob
+    -- Objective args = list of mob names that count (usually 1).
+    -- Keyed by mob name -> function(questData, amount)
+    local MobHandlers = {}
+
+    MobHandlers["Boarwolf"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(2, 5, nil)
+    end
+    MobHandlers["EliteBoarwolf"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(2, 5, nil)
+    end
+    MobHandlers["Toucan"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(3, 5, nil)
+    end
+    MobHandlers["EarthCrab"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(4, 5, nil)
+    end
+    MobHandlers["ElectricCrab"] = MobHandlers["EarthCrab"]
+    MobHandlers["FireCrab"] = MobHandlers["EarthCrab"]
+    MobHandlers["GrassCobra"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(1, 5, nil)
+    end
+    MobHandlers["PoisonCobra"] = MobHandlers["GrassCobra"]
+    MobHandlers["Quillodile"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(12, 1, nil)
+    end
+    MobHandlers["GoblinSpear"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(13, 1, nil)
+    end
+    MobHandlers["GoblinSlingshot"] = MobHandlers["GoblinSpear"]
+    MobHandlers["GoblinGatekeeper"] = MobHandlers["GoblinSpear"]
+    MobHandlers["RedGoblinSpear"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(13, 1, nil)
+    end
+    MobHandlers["RedGoblinSlingshot"] = MobHandlers["RedGoblinSpear"]
+    MobHandlers["RedGoblinGatekeeper"] = MobHandlers["RedGoblinSpear"]
+    MobHandlers["IcyGoo"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(15, 1, nil)
+    end
+    MobHandlers["SnowRaptor"] = MobHandlers["IcyGoo"]
+    MobHandlers["FrostGolem"] = MobHandlers["IcyGoo"]
+    MobHandlers["HappyCactus"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(18, 5, nil)
+    end
+    MobHandlers["GoldCobra"] = MobHandlers["HappyCactus"]
+    MobHandlers["RockGolem"] = MobHandlers["HappyCactus"]
+    MobHandlers["PinkBoarwolf"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(24, 5, nil)
+    end
+    MobHandlers["BlueGoblinSlingshot"] = MobHandlers["PinkBoarwolf"]
+    MobHandlers["BlueGoblinElite"] = MobHandlers["PinkBoarwolf"]
+    MobHandlers["BlueGoblinGatekeeper"] = MobHandlers["PinkBoarwolf"]
+    MobHandlers["BlossomTree"] = MobHandlers["PinkBoarwolf"]
+    MobHandlers["SeaSerpent"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(36, 5, nil)
+    end
+    MobHandlers["JellyfishSlime"] = MobHandlers["SeaSerpent"]
+    MobHandlers["Parrot"] = MobHandlers["SeaSerpent"]
+    MobHandlers["GoblinGladiator"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(37, 5, nil)
+    end
+    MobHandlers["GoblinSpartan"] = MobHandlers["GoblinGladiator"]
+    MobHandlers["Kirin"] = MobHandlers["GoblinGladiator"]
+    MobHandlers["ScorpionGold"] = MobHandlers["GoblinGladiator"]
+    MobHandlers["Gargoyle"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(26, 5, nil)
+    end
+    MobHandlers["GargoyleGrey"] = MobHandlers["Gargoyle"]
+    MobHandlers["RuinGuardian"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(30, 5, nil)
+    end
+    MobHandlers["Alligator"] = MobHandlers["RuinGuardian"]
+    MobHandlers["Rapigator"] = MobHandlers["RuinGuardian"]
+
+    -- Used for KillAnyMob (no specific mob name given) and as a
+    -- fallback if a mob isn't in MobHandlers above
+    local function DefaultMobHandler(questData, amount, mobName)
+        rs.Teleport_StartRaid:FireServer(38, nil, nil) -- Infinite Tower, counts any kill
+    end
+
+    -- DoDungeonInWorld -> "finish any dungeon in World X"
+    -- Keyed by LinkedWorld -> function(questData, amount)
+    local DungeonWorldHandlers = {}
+    DungeonWorldHandlers[1] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(1, 5, nil)
+    end
+    DungeonWorldHandlers[2] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(11, 5, nil)
+    end
+    DungeonWorldHandlers[3] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(15, 1, nil)
+    end
+    DungeonWorldHandlers[4] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(18, 5, nil)
+    end
+    -- TODO: add 5,6,7,8,9,10 etc as you go
+
+    -- DoDungeon -> "defeat dungeon '<Name>' at any difficulty"
+    -- Objective args = {dungeonId}. Keyed by dungeon id.
+    local DungeonIdHandlers = {}
+    -- DungeonIdHandlers[11] = function(questData, amount) -- Temple of Ruin (World 2)
+    --     -- TODO: your script goes here
+    -- end
+    -- DungeonIdHandlers[26] = function(questData, amount) -- The Underworld (World 7)
+    --     -- TODO: your script goes here
+    -- end
+    -- DungeonIdHandlers[14] = function(questData, amount) -- Mountain Pass (World 3)
+    --     -- TODO: your script goes here
+    -- end
+
+    -- CompleteWorldEvent -> keyed by LinkedWorld (doing these later per your note)
+    local WorldEventHandlers = {}
+    -- WorldEventHandlers[1] = function(questData, amount) -- TODO end
+    -- WorldEventHandlers[2] = function(questData, amount) -- TODO end
+    -- WorldEventHandlers[3] = function(questData, amount) -- TODO end
+    -- WorldEventHandlers[4] = function(questData, amount) -- TODO end
+    -- WorldEventHandlers[5] = function(questData, amount) -- TODO end
+    -- WorldEventHandlers[6] = function(questData, amount) -- TODO end
+    -- WorldEventHandlers[7] = function(questData, amount) -- TODO end
+    -- WorldEventHandlers[9] = function(questData, amount) -- TODO end
+
+    -- TimeInWorld -> "fight in the PvP Arena for 10 min" and similar.
+    -- Objective args = {hubId}. Generic handler: teleport to that hub
+    -- and just stay there, progress ticks up on its own.
+    local function TimeInWorldHandler(questData, amount, hubId)
+        if hubId then
+            rs.Teleport_TeleportToHub:FireServer(hubId)
+        end
+    end
+
+    -- CustomEvent -> Objective args = {eventKey}. Keyed by that key.
+    local CustomEventHandlers = {}
+    -- CustomEventHandlers["UpgradeCompleted"] = function(questData, amount)
+    --     -- TODO: your script goes here
+    -- end
+    CustomEventHandlers["CollectEquipmentInDungeon"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(2, 5, nil)
+    end
+    CustomEventHandlers["HatchPetEgg"] = function(questData, amount)
+        for i = 1, amount do
+            rs.Pets_BuyEgg:FireServer("StarEgg", "Gold")
+        end
+    end
+    -- CustomEventHandlers["DuelCompleted"] = function(questData, amount)
+    --     -- TODO: your script goes here
+    -- end
+    CustomEventHandlers["CompletedInfiniteTowerFloor"] = function(questData, amount)
+        rs.Teleport_StartRaid:FireServer(38, nil, nil)
+    end
+
+    -- DoDungeonWithClass -> Objective args = {classTier}. TODO if you want
+    -- to switch classes automatically; otherwise it'll just be skipped.
+    local DungeonWithClassHandlers = {}
+    -- DungeonWithClassHandlers[2] = function(questData, amount) -- TODO end
+    -- DungeonWithClassHandlers[4] = function(questData, amount) -- TODO end
+
+    -- DoDungeonWithWorldAndDifficulty -> keyed by LinkedWorld (args = {difficulty})
+    local DungeonWorldDifficultyHandlers = {}
+    -- DungeonWorldDifficultyHandlers[2] = function(questData, amount, difficulty) -- TODO end
+    -- DungeonWorldDifficultyHandlers[6] = function(questData, amount, difficulty) -- TODO end
+
+    -- DoRandomDungeonWithDifficulty -> Objective args = {difficulty}
+    local function RandomDungeonHandler(questData, amount, difficulty)
+        -- TODO: your script goes here (Nightmare Portal)
+    end
+
+    -- ========================================================
+    -- DISPATCHER — routes each quest to the right handler above
+    -- based on its Objective type + content. You shouldn't need
+    -- to touch this, just fill in the *Handlers tables above.
+    -- ========================================================
+    local function RunHandlerFor(questData, objective, amount)
+        local objType = objective[1]
+        local args = objective[3] or {}
+
+        if objType == "KillMob" or objType == "KillMobInWorld" then
+            local mobName = args[1]
+            local handler = mobName and MobHandlers[mobName]
+            if handler then
+                return true, pcall(handler, questData, amount)
+            else
+                return true, pcall(DefaultMobHandler, questData, amount, mobName)
+            end
+
+        elseif objType == "KillAnyMob" then
+            return true, pcall(DefaultMobHandler, questData, amount, nil)
+
+        elseif objType == "DoDungeonInWorld" then
+            local handler = questData.LinkedWorld and DungeonWorldHandlers[questData.LinkedWorld]
+            if handler then
+                return true, pcall(handler, questData, amount)
+            end
+            return false
+
+        elseif objType == "DoDungeon" then
+            local dungeonId = args[1]
+            local handler = dungeonId and DungeonIdHandlers[dungeonId]
+            if handler then
+                return true, pcall(handler, questData, amount)
+            end
+            return false
+
+        elseif objType == "CompleteWorldEvent" then
+            local handler = questData.LinkedWorld and WorldEventHandlers[questData.LinkedWorld]
+            if handler then
+                return true, pcall(handler, questData, amount)
+            end
+            return false
+
+        elseif objType == "TimeInWorld" then
+            local hubId = args[1]
+            return true, pcall(TimeInWorldHandler, questData, amount, hubId)
+
+        elseif objType == "CustomEvent" then
+            local key = args[1]
+            local handler = key and CustomEventHandlers[key]
+            if handler then
+                return true, pcall(handler, questData, amount)
+            end
+            return false
+
+        elseif objType == "DoDungeonWithClass" then
+            local tier = args[1]
+            local handler = tier and DungeonWithClassHandlers[tier]
+            if handler then
+                return true, pcall(handler, questData, amount)
+            end
+            return false
+
+        elseif objType == "DoDungeonWithWorldAndDifficulty" then
+            local handler = questData.LinkedWorld and DungeonWorldDifficultyHandlers[questData.LinkedWorld]
+            if handler then
+                return true, pcall(handler, questData, amount, args[1])
+            end
+            return false
+
+        elseif objType == "DoRandomDungeonWithDifficulty" then
+            return true, pcall(RandomDungeonHandler, questData, amount, args[1])
+        end
+
+        return false
+    end
+
+    -- Called once a quest is finished — turn off whatever your
+    -- handler turned on here (e.g. your mob farm toggle)
+    local function StopCurrentAction(questId, questData)
+        -- TODO (optional, only needed if you want to stop something
+        -- between quests)
+
+    end
 
     -- Grabs the first quest in the list that isn't finished yet AND has a
-    -- real handler written for it. Quests with no handler (still a TODO)
+    -- real handler for its content. Quests with no handler (still a TODO)
     -- get skipped so the bot doesn't get stuck waiting on them forever.
     -- Along the way it also claims anything that's already done but
     -- hasn't been claimed yet (in case it finished on its own).
@@ -81,401 +346,12 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                 local current, completed = GetProgress(questId)
                 if completed then
                     ClaimQuest(questId)
-                elseif QuestHandlers[questId] then
-                    return questId, questData, current
                 else
-                    sawUnhandled = true
+                    return questId, questData, current
                 end
             end
         end
         return nil, nil, nil, sawUnhandled
-    end
-
-    -- ========================================================
-    -- QUEST HANDLERS — THIS IS WHERE YOU PUT YOUR OWN CODE
-    -- --------------------------------------------------------
-    -- One questId = one block. Everything below is every quest
-    -- that can actually show up in Daily / Weekly (checked
-    -- against QuestList). Just drop your script inside the
-    -- matching QuestHandlers["quest_id"] = function(questData, amount) ... end
-    --
-    -- questData -- the full quest table (Name, LinkedWorld, Objective...)
-    -- amount    -- how much is needed (e.g. 30 cobras, 600 seconds, etc)
-    --
-    -- The function should just KICK OFF the action and return
-    -- (e.g. flip on your farm toggle, teleport, whatever) - it should
-    -- NOT block. The loop below handles waiting for progress and
-    -- claiming the reward once GetQuestProgress says it's completed.
-    -- ========================================================
-
-    -- ============================================================
-    -- DAILY QUESTS
-    -- ============================================================
-
-    -- [daily_boarwolves] Defeat 30 Boarwolves in World 1
-    -- Type: KillMob | Amount: 30 | Args: Boarwolf | World: 1
-    QuestHandlers["daily_boarwolves"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(2, 5, nil)
-    end
-
-    -- [daily_w1we] Complete 1 World Event in World 1
-    -- Type: CompleteWorldEvent | Amount: 1 | World: 1
-    QuestHandlers["daily_w1we"] = function(questData, amount)
-        -- TODO: your script goes here (world events - doing later)
-
-    end
-
-    -- [daily_toucans] Defeat 30 Toucans in World 1
-    -- Type: KillMob | Amount: 30 | Args: Toucan | World: 1
-    QuestHandlers["daily_toucans"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(3, 5, nil)
-    end
-
-    -- [daily_earthcrabs] Defeat 30 Crabs in World 1
-    -- Type: KillMob | Amount: 30 | Args: EarthCrab, ElectricCrab, FireCrab | World: 1
-    QuestHandlers["daily_earthcrabs"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(4, 5, nil)
-    end
-
-    -- [daily_cobras] Defeat 30 Cobras in World 1
-    -- Type: KillMob | Amount: 30 | Args: GrassCobra, PoisonCobra | World: 1
-    QuestHandlers["daily_cobras"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(1, 5, nil)
-    end
-
-    -- [daily_eliteboarwolves] Defeat 30 Alpha Boarwolves in World 1
-    -- Type: KillMob | Amount: 30 | Args: EliteBoarwolf | World: 1
-    QuestHandlers["daily_eliteboarwolves"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(2, 5, nil)
-    end
-
-    -- [daily_missionw1] Finish any dungeon in World 1
-    -- Type: DoDungeonInWorld | Amount: 1 | World: 1
-    QuestHandlers["daily_missionw1"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(1, 5, nil)
-    end
-
-    -- [daily_w2we] Complete 1 World Event in World 2
-    -- Type: CompleteWorldEvent | Amount: 1 | World: 2
-    QuestHandlers["daily_w2we"] = function(questData, amount)
-        -- TODO: your script goes here (world events - doing later)
-
-    end
-
-    -- [daily_quillodiles] Defeat 30 Quillodiles in World 2
-    -- Type: KillMob | Amount: 30 | Args: Quillodile | World: 2
-    QuestHandlers["daily_quillodiles"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(12, 1, nil)
-    end
-
-    -- [daily_goblins] Defeat 30 Green Goblins in World 2
-    -- Type: KillMob | Amount: 30 | Args: GoblinSpear, GoblinSlingshot, GoblinGatekeeper | World: 2
-    QuestHandlers["daily_goblins"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(13, 1, nil)
-    end
-
-    -- [daily_redgoblins] Defeat 30 Red Goblins in World 2
-    -- Type: KillMob | Amount: 30 | Args: RedGoblinSpear, RedGoblinSlingshot, RedGoblinGatekeeper | World: 2
-    QuestHandlers["daily_redgoblins"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(13, 1, nil)
-    end
-
-    -- [daily_missionw2] Finish any dungeon in World 2
-    -- Type: DoDungeonInWorld | Amount: 1 | World: 2
-    QuestHandlers["daily_missionw2"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(11, 5, nil)
-    end
-
-    -- [daily_w3we] Complete 1 World Event in World 3
-    -- Type: CompleteWorldEvent | Amount: 1 | World: 3
-    QuestHandlers["daily_w3we"] = function(questData, amount)
-        -- TODO: your script goes here (world events - doing later)
-
-    end
-
-    -- [daily_icygoos] Defeat 30 Icy Goos in World 3
-    -- Type: KillMob | Amount: 30 | Args: IcyGoo | World: 3
-    QuestHandlers["daily_icygoos"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(15, 1, nil)
-    end
-
-    -- [daily_snowraptors] Defeat 30 Snow Raptors in World 3
-    -- Type: KillMob | Amount: 30 | Args: SnowRaptor | World: 3
-    QuestHandlers["daily_snowraptors"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(15, 1, nil)
-    end
-
-    -- [daily_frostgolems] Defeat 20 Frost Golems in World 3
-    -- Type: KillMob | Amount: 20 | Args: FrostGolem | World: 3
-    QuestHandlers["daily_frostgolems"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(15, 1, nil)
-    end
-
-    -- [daily_missionw3] Finish any dungeon in World 3
-    -- Type: DoDungeonInWorld | Amount: 1 | World: 3
-    QuestHandlers["daily_missionw3"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(15, 1, nil)
-    end
-
-    -- [daily_w4we] Complete 1 World Event in World 4
-    -- Type: CompleteWorldEvent | Amount: 1 | World: 4
-    QuestHandlers["daily_w4we"] = function(questData, amount)
-        -- TODO: your script goes here (world events - doing later)
-
-    end
-
-    -- [daily_happycactuses] Defeat 30 Happy Cacti in World 4
-    -- Type: KillMob | Amount: 30 | Args: HappyCactus | World: 4
-    QuestHandlers["daily_happycactuses"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(18, 5, nil)
-    end
-
-    -- [daily_goldensnakes] Defeat 30 Golden Cobras in World 4
-    -- Type: KillMob | Amount: 30 | Args: GoldCobra | World: 4
-    QuestHandlers["daily_goldensnakes"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(18, 5, nil)
-    end
-
-    -- [daily_rockgolems] Defeat 20 Rock Golems in World 4
-    -- Type: KillMob | Amount: 20 | Args: RockGolem | World: 4
-    QuestHandlers["daily_rockgolems"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(18, 5, nil)
-    end
-
-    -- [daily_missionw4] Finish any dungeon in World 4
-    -- Type: DoDungeonInWorld | Amount: 1 | World: 4
-    QuestHandlers["daily_missionw4"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(18, 5, nil)
-    end
-
-    -- [daily_w5we] Complete 1 World Event in World 5
-    -- Type: CompleteWorldEvent | Amount: 1 | World: 5
-    QuestHandlers["daily_w5we"] = function(questData, amount)
-        -- TODO: your script goes here (world events - doing later)
-
-    end
-
-    -- [daily_pinkboarwolves] Defeat 30 Charged Boarwolves in World 5
-    -- Type: KillMob | Amount: 30 | Args: PinkBoarwolf | World: 5
-    QuestHandlers["daily_pinkboarwolves"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(24, 5, nil)
-    end
-
-    -- [daily_bluegoblins] Defeat 30 Blue Goblins in World 5
-    -- Type: KillMob | Amount: 30 | Args: BlueGoblinSlingshot, BlueGoblinElite, BlueGoblinGatekeeper | World: 5
-    QuestHandlers["daily_bluegoblins"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(24, 5, nil)
-    end
-
-    -- [daily_blossomtrees] Defeat 30 Blossom Trees in World 5
-    -- Type: KillMob | Amount: 30 | Args: BlossomTree | World: 5
-    QuestHandlers["daily_blossomtrees"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(24, 5, nil)
-    end
-
-    -- [daily_seaserpent] Defeat Sea Serpents in World 6
-    -- Type: KillMob | Amount: 30 | Args: SeaSerpent | World: 6
-    QuestHandlers["daily_seaserpent"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(36, 5, nil)
-    end
-
-    -- [daily_jellyfishslime] Defeat Jellyfish Slime in World 6
-    -- Type: KillMob | Amount: 30 | Args: JellyfishSlime | World: 6
-    QuestHandlers["daily_jellyfishslime"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(36, 5, nil)
-    end
-
-    -- [daily_parrot] Defeat Parrots in World 6
-    -- Type: KillMob | Amount: 30 | Args: Parrot | World: 6
-    QuestHandlers["daily_parrot"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(36, 5, nil)
-    end
-
-    -- [daily_goblingladiator] Defeat Gladiator Goblins in World 7
-    -- Type: KillMob | Amount: 30 | Args: GoblinGladiator | World: 7
-    QuestHandlers["daily_goblingladiator"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(37, 5, nil)
-    end
-
-    -- [daily_goblinspartan] Defeat Armored Goblins in World 7
-    -- Type: KillMob | Amount: 25 | Args: GoblinSpartan | World: 7
-    QuestHandlers["daily_goblinspartan"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(37, 5, nil)
-    end
-
-    -- [daily_kirin] Defeat Ki-Rins in World 7
-    -- Type: KillMob | Amount: 30 | Args: Kirin | World: 7
-    QuestHandlers["daily_kirin"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(37, 5, nil)
-    end
-
-    -- [daily_scorpiongold] Defeat Gilded Scorpions in World 7
-    -- Type: KillMob | Amount: 30 | Args: ScorpionGold | World: 7
-    QuestHandlers["daily_scorpiongold"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(37, 5, nil)
-    end
-
-    -- [daily_gargoyle] Defeat Red Gargoyles in World 7
-    -- Type: KillMob | Amount: 30 | Args: Gargoyle | World: 7
-    QuestHandlers["daily_gargoyle"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(26, 5, nil)
-    end
-
-    -- [daily_gargoyle2] Defeat Flaming Gargoyles in World 7
-    -- Type: KillMob | Amount: 30 | Args: GargoyleGrey | World: 7
-    QuestHandlers["daily_gargoyle2"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(26, 5, nil)
-    end
-
-    -- [daily_ruinguardian] Defeat Ruin Guardians in World 8
-    -- Type: KillMob | Amount: 3 | Args: RuinGuardian | World: 8
-    QuestHandlers["daily_ruinguardian"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(30, 5, nil)
-    end
-
-    -- [daily_alligator] Defeat Alligators in World 8
-    -- Type: KillMob | Amount: 30 | Args: Alligator, Rapigator | World: 8
-    QuestHandlers["daily_alligator"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(30, 5, nil)
-    end
-
-    -- [daily_w9we] Complete 1 World Event in World 9
-    -- Type: CompleteWorldEvent | Amount: 1 | World: 9
-    QuestHandlers["daily_w9we"] = function(questData, amount)
-        -- TODO: your script goes here (world events - doing later)
-
-    end
-
-    -- [daily_dungeonPortal] Complete any Dungeon from the Nightmare Portals
-    -- Type: DoRandomDungeonWithDifficulty | Amount: 1 | Args: difficulty 1
-    QuestHandlers["daily_dungeonPortal"] = function(questData, amount)
-        -- TODO: your script goes here
-
-    end
-
-    -- [daily_infiniteTower] Defeat 100 monsters in the Infinite Tower
-    -- Type: KillAnyMob | Amount: 100
-    QuestHandlers["daily_infiniteTower"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(38, nil, nil)
-    end
-
-    -- ============================================================
-    -- WEEKLY QUESTS
-    -- ============================================================
-
-    -- [weekly_upgradeItem] Upgrade items 10 times
-    -- Type: CustomEvent | Amount: 10 | Args: UpgradeCompleted
-    QuestHandlers["weekly_upgradeItem"] = function(questData, amount)
-        -- TODO: your script goes here
-
-    end
-
-    -- [weekly_collectArmor] Collect Equipment items from dungeons 15 times
-    -- Type: CustomEvent | Amount: 15 | Args: CollectEquipmentInDungeon
-    QuestHandlers["weekly_collectArmor"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(2, 5, nil)
-    end
-
-    -- [weekly_worldEvent] Complete any world event 5 times
-    -- Type: CompleteWorldEvent | Amount: 5
-    QuestHandlers["weekly_worldEvent"] = function(questData, amount)
-        -- TODO: your script goes here (world events - doing later)
-
-    end
-
-    -- [weekly_hatchPet] Hatch 5 pet eggs
-    -- Type: CustomEvent | Amount: 5 | Args: HatchPetEgg
-    QuestHandlers["weekly_hatchPet"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Pets_BuyEgg
-        for i = 1, 5 do
-            Event:FireServer("StarEgg", "Gold")
-        end
-    end
-
-    -- [weekly_doDungeons] Complete 10 dungeons of any difficulty
-    -- Type: DoDungeonInWorld | Amount: 10
-    QuestHandlers["weekly_doDungeons"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(1, 5, nil)
-    end
-
-    -- [weekly_anyMob] Defeat 2800 monsters in any world
-    -- Type: KillAnyMob | Amount: 2800
-    QuestHandlers["weekly_anyMob"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(38, nil, nil)
-    end
-
-    -- [weekly_duels] Participate in 5 duels
-    -- Type: CustomEvent | Amount: 5 | Args: DuelCompleted
-    QuestHandlers["weekly_duels"] = function(questData, amount)
-        -- TODO: your script goes here
-
-    end
-
-    -- [weekly_pvpArenaTime] Fight in the PvP Arena for 10 minutes
-    -- Type: TimeInWorld | Amount: 600 (seconds) | World: 103 (PvP arena)
-    QuestHandlers["weekly_pvpArenaTime"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_TeleportToHub
-        Event:FireServer(39)
-    end
-
-    -- [weekly_infiniteTower] Clear 30 floors of the Infinite Tower
-    -- Type: CustomEvent | Amount: 30 | Args: CompletedInfiniteTowerFloor
-    QuestHandlers["weekly_infiniteTower"] = function(questData, amount)
-        local Event = game:GetService("ReplicatedStorage").rs.Teleport_StartRaid
-        Event:FireServer(38, nil, nil)
-    end
-
-    -- ========================================================
-    -- Fallback if the current quest doesn't have a handler above
-    -- (e.g. a new quest got added to the game and this list wasn't
-    -- updated yet)
-    -- ========================================================
-    local function DefaultHandler(questId, questData, amount)
-        warn('[Quests] No handler for quest: ' .. tostring(questId) .. ' (' .. tostring(questData.Name) .. ')')
-    end
-
-    -- Called once a quest is finished — turn off whatever your
-    -- handler turned on here (e.g. your mob farm toggle)
-    local function StopCurrentAction(questId, questData)
-        -- TODO (optional, only needed if you want to stop something
-        -- between quests)
-
     end
 
     -- ========================================================
@@ -497,40 +373,35 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
 
         while Running and myToken == runToken do
             local questIds = (mode == 'Daily') and GetActiveDailyQuestIds() or GetActiveWeeklyQuestIds()
-            warn('[Quests] ' .. mode .. ' active quest ids: ' .. table.concat(questIds, ', '))
 
             if #questIds == 0 then
-                StatusText = 'No active ' .. mode .. ' quests found (check GetActiveQuestIds)'
-                warn('[Quests] ' .. mode .. ': GetActive' .. mode .. 'QuestIds returned an EMPTY list. Nothing to do.')
+                StatusText = 'No active ' .. mode .. ' quests found'
+                warn('[Quests] ' .. mode .. ': GetActive' .. mode .. 'QuestIds returned an EMPTY list.')
                 task.wait(5)
             else
-                local questId, questData, current, sawUnhandled = GetNextIncompleteQuest(questIds)
+                local questId, questData, current = GetNextIncompleteQuest(questIds)
 
                 if not questId then
-                    if sawUnhandled then
-                        StatusText = 'All handled ' .. mode .. ' quests done (some still TODO)'
-                    else
-                        StatusText = 'All ' .. mode .. ' quests done!'
-                        noti(mode .. ' Quests: all done!')
-                    end
+                    StatusText = 'All ' .. mode .. ' quests done!'
+                    noti(mode .. ' Quests: all done!')
                     task.wait(5)
                 else
                     local objective = questData.Objective
                     local amount = objective[2]
 
                     CurrentQuestId = questId
-                    local handler = QuestHandlers[questId]
+                    local handled, ok, err = RunHandlerFor(questData, objective, amount)
 
-                    if handler then
-                        StatusText = (questData.Name or questId) .. ' (0/' .. tostring(amount) .. ')'
-                        local ok, err = pcall(handler, questData, amount)
+                    if handled then
                         if not ok then
-                            warn('[Quests] Error in handler for ' .. questId .. ': ' .. tostring(err))
+                            warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
                         end
+
+                        StatusText = (questData.Name or tostring(questId)) .. ' (0/' .. tostring(amount) .. ')'
 
                         while Running and myToken == runToken do
                             local newCurrent, completed = GetProgress(questId)
-                            StatusText = (questData.Name or questId) .. ' (' .. tostring(newCurrent or 0) .. '/' .. tostring(amount) .. ')'
+                            StatusText = (questData.Name or tostring(questId)) .. ' (' .. tostring(newCurrent or 0) .. '/' .. tostring(amount) .. ')'
                             if completed then
                                 pcall(StopCurrentAction, questId, questData)
                                 ClaimQuest(questId)
@@ -539,9 +410,9 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                             task.wait(CheckInterval)
                         end
                     else
-                        -- No handler (or still a TODO) - skip this quest and
-                        -- move straight to the next one instead of hanging forever
-                        DefaultHandler(questId, questData, amount)
+                        -- No handler written for this quest's content yet -
+                        -- skip it and move to the next one instead of hanging
+                        warn('[Quests] No handler for: "' .. tostring(questData.Name) .. '" (ID ' .. tostring(questId) .. ', Objective: ' .. objective[1] .. ')')
                         task.wait(1)
                     end
                 end
