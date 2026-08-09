@@ -16,7 +16,15 @@
 -- are for.
 -- ============================================================
 
-local plr, rs, Window, Tabs, Toggles, noti = ...
+local plr, rs, Window, Tabs, Toggles, noti, IsInMission = ...
+
+-- IsInMission should be a function you pass in that returns true/false
+-- for whether you're currently in a mission/dungeon/raid. In your main
+-- script `mission` is local, so pass a small wrapper like:
+--   loadstring(...)(plr, rs, Window, Tabs, Toggles, noti, function() return mission ~= nil end)
+-- If you don't pass one, quests will still work, they just won't check
+-- "am I already in the right place" before teleporting.
+IsInMission = IsInMission or function() return false end
 
 local Quests = require(game.ReplicatedStorage.Shared.Quests)
 local Profile = require(game.ReplicatedStorage.Shared.Profile)
@@ -88,70 +96,70 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     local MobHandlers = {}
 
     MobHandlers["Boarwolf"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(2, 5, nil)
+        StartRaid(2, 5)
     end
     MobHandlers["EliteBoarwolf"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(2, 5, nil)
+        StartRaid(2, 5)
     end
     MobHandlers["Toucan"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(3, 5, nil)
+        StartRaid(3, 5)
     end
     MobHandlers["EarthCrab"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(4, 5, nil)
+        StartRaid(4, 5)
     end
     MobHandlers["ElectricCrab"] = MobHandlers["EarthCrab"]
     MobHandlers["FireCrab"] = MobHandlers["EarthCrab"]
     MobHandlers["GrassCobra"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(1, 5, nil)
+        StartRaid(1, 5)
     end
     MobHandlers["PoisonCobra"] = MobHandlers["GrassCobra"]
     MobHandlers["Quillodile"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(12, 1, nil)
+        StartRaid(12, 1)
     end
     MobHandlers["GoblinSpear"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(13, 1, nil)
+        StartRaid(13, 1)
     end
     MobHandlers["GoblinSlingshot"] = MobHandlers["GoblinSpear"]
     MobHandlers["GoblinGatekeeper"] = MobHandlers["GoblinSpear"]
     MobHandlers["RedGoblinSpear"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(13, 1, nil)
+        StartRaid(13, 1)
     end
     MobHandlers["RedGoblinSlingshot"] = MobHandlers["RedGoblinSpear"]
     MobHandlers["RedGoblinGatekeeper"] = MobHandlers["RedGoblinSpear"]
     MobHandlers["IcyGoo"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(15, 1, nil)
+        StartRaid(15, 1)
     end
     MobHandlers["SnowRaptor"] = MobHandlers["IcyGoo"]
     MobHandlers["FrostGolem"] = MobHandlers["IcyGoo"]
     MobHandlers["HappyCactus"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(18, 5, nil)
+        StartRaid(18, 5)
     end
     MobHandlers["GoldCobra"] = MobHandlers["HappyCactus"]
     MobHandlers["RockGolem"] = MobHandlers["HappyCactus"]
     MobHandlers["PinkBoarwolf"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(24, 5, nil)
+        StartRaid(24, 5)
     end
     MobHandlers["BlueGoblinSlingshot"] = MobHandlers["PinkBoarwolf"]
     MobHandlers["BlueGoblinElite"] = MobHandlers["PinkBoarwolf"]
     MobHandlers["BlueGoblinGatekeeper"] = MobHandlers["PinkBoarwolf"]
     MobHandlers["BlossomTree"] = MobHandlers["PinkBoarwolf"]
     MobHandlers["SeaSerpent"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(36, 5, nil)
+        StartRaid(36, 5)
     end
     MobHandlers["JellyfishSlime"] = MobHandlers["SeaSerpent"]
     MobHandlers["Parrot"] = MobHandlers["SeaSerpent"]
     MobHandlers["GoblinGladiator"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(37, 5, nil)
+        StartRaid(37, 5)
     end
     MobHandlers["GoblinSpartan"] = MobHandlers["GoblinGladiator"]
     MobHandlers["Kirin"] = MobHandlers["GoblinGladiator"]
     MobHandlers["ScorpionGold"] = MobHandlers["GoblinGladiator"]
     MobHandlers["Gargoyle"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(26, 5, nil)
+        StartRaid(26, 5)
     end
     MobHandlers["GargoyleGrey"] = MobHandlers["Gargoyle"]
     MobHandlers["RuinGuardian"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(30, 5, nil)
+        StartRaid(30, 5)
     end
     MobHandlers["Alligator"] = MobHandlers["RuinGuardian"]
     MobHandlers["Rapigator"] = MobHandlers["RuinGuardian"]
@@ -159,23 +167,23 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     -- Used for KillAnyMob (no specific mob name given) and as a
     -- fallback if a mob isn't in MobHandlers above
     local function DefaultMobHandler(questData, amount, mobName)
-        rs.Teleport_StartRaid:FireServer(38, nil, nil) -- Infinite Tower, counts any kill
+        StartRaid(38, nil) -- Infinite Tower, counts any kill
     end
 
     -- DoDungeonInWorld -> "finish any dungeon in World X"
     -- Keyed by LinkedWorld -> function(questData, amount)
     local DungeonWorldHandlers = {}
     DungeonWorldHandlers[1] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(1, 5, nil)
+        StartRaid(1, 5)
     end
     DungeonWorldHandlers[2] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(11, 5, nil)
+        StartRaid(11, 5)
     end
     DungeonWorldHandlers[3] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(15, 1, nil)
+        StartRaid(15, 1)
     end
     DungeonWorldHandlers[4] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(18, 5, nil)
+        StartRaid(18, 5)
     end
     -- TODO: add 5,6,7,8,9,10 etc as you go
 
@@ -218,7 +226,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     --     -- TODO: your script goes here
     -- end
     CustomEventHandlers["CollectEquipmentInDungeon"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(2, 5, nil)
+        StartRaid(2, 5)
     end
     CustomEventHandlers["HatchPetEgg"] = function(questData, amount)
         for i = 1, amount do
@@ -229,7 +237,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     --     -- TODO: your script goes here
     -- end
     CustomEventHandlers["CompletedInfiniteTowerFloor"] = function(questData, amount)
-        rs.Teleport_StartRaid:FireServer(38, nil, nil)
+        StartRaid(38, nil)
     end
 
     -- DoDungeonWithClass -> Objective args = {classTier}. TODO if you want
@@ -444,13 +452,19 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                     local amount = objective[2]
 
                     CurrentQuestId = questId
-                    local handled, ok, err = RunHandlerFor(questData, objective, amount)
 
-                    if not ok and handled then
-                        warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
+                    if IsInMission() then
+                        -- Already in a mission/dungeon/raid - don't fire
+                        -- another teleport on top of it, just wait and
+                        -- track progress on whatever you're already doing
+                        StatusText = (questData.Name or tostring(questId)) .. ' (already in mission, tracking...)'
+                    else
+                        local handled, ok, err = RunHandlerFor(questData, objective, amount)
+                        if not ok and handled then
+                            warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
+                        end
+                        StatusText = (questData.Name or tostring(questId)) .. ' (0/' .. tostring(amount) .. ')'
                     end
-
-                    StatusText = (questData.Name or tostring(questId)) .. ' (0/' .. tostring(amount) .. ')'
 
                     while Running and myToken == runToken do
                         local newCurrent, completed = GetProgress(questId)
