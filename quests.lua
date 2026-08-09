@@ -249,6 +249,41 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     end
 
     -- ========================================================
+    -- CanHandle — a "dry run" check: does this quest's content
+    -- have a handler written for it? Used to pick which quest to
+    -- work on next (see GetNextIncompleteQuest below).
+    -- ========================================================
+    local function CanHandle(questData, objective)
+        local objType = objective[1]
+        local args = objective[3] or {}
+
+        if objType == "KillMob" or objType == "KillMobInWorld" or objType == "KillAnyMob" then
+            return true -- always covered, falls back to DefaultMobHandler
+        elseif objType == "DoDungeonInWorld" then
+            return questData.LinkedWorld ~= nil and DungeonWorldHandlers[questData.LinkedWorld] ~= nil
+        elseif objType == "DoDungeon" then
+            local dungeonId = args[1]
+            return dungeonId ~= nil and DungeonIdHandlers[dungeonId] ~= nil
+        elseif objType == "CompleteWorldEvent" then
+            return questData.LinkedWorld ~= nil and WorldEventHandlers[questData.LinkedWorld] ~= nil
+        elseif objType == "TimeInWorld" then
+            return true
+        elseif objType == "CustomEvent" then
+            local key = args[1]
+            return key ~= nil and CustomEventHandlers[key] ~= nil
+        elseif objType == "DoDungeonWithClass" then
+            local tier = args[1]
+            return tier ~= nil and DungeonWithClassHandlers[tier] ~= nil
+        elseif objType == "DoDungeonWithWorldAndDifficulty" then
+            return questData.LinkedWorld ~= nil and DungeonWorldDifficultyHandlers[questData.LinkedWorld] ~= nil
+        elseif objType == "DoRandomDungeonWithDifficulty" then
+            return true
+        end
+
+        return false
+    end
+
+    -- ========================================================
     -- DISPATCHER — routes each quest to the right handler above
     -- based on its Objective type + content. You shouldn't need
     -- to touch this, just fill in the *Handlers tables above.
@@ -335,11 +370,13 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
 
     -- Grabs the first quest in the list that isn't finished yet AND has a
     -- real handler for its content. Quests with no handler (still a TODO)
-    -- get skipped so the bot doesn't get stuck waiting on them forever.
+    -- get skipped so the bot doesn't get stuck waiting on them forever -
+    -- it keeps looking further down the list instead of retrying the
+    -- same unhandled quest over and over.
     -- Along the way it also claims anything that's already done but
     -- hasn't been claimed yet (in case it finished on its own).
     local function GetNextIncompleteQuest(questIds)
-        local sawUnhandled = false
+        local skippedNames = {}
         for _, questId in ipairs(questIds) do
             local questData = GetQuestData(questId)
             if questData and not questData.Disabled then
@@ -347,11 +384,16 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                 if completed then
                     ClaimQuest(questId)
                 else
-                    return questId, questData, current
+                    local objective = questData.Objective
+                    if CanHandle(questData, objective) then
+                        return questId, questData, current
+                    else
+                        table.insert(skippedNames, questData.Name or tostring(questId))
+                    end
                 end
             end
         end
-        return nil, nil, nil, sawUnhandled
+        return nil, nil, nil, skippedNames
     end
 
     -- ========================================================
@@ -363,6 +405,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     local CurrentQuestId = nil
     local CheckInterval = 2
     local StatusText = 'Idle'
+    local lastSkippedKey = nil
 
     local dailyStatusLabel, weeklyStatusLabel
 
@@ -379,41 +422,45 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                 warn('[Quests] ' .. mode .. ': GetActive' .. mode .. 'QuestIds returned an EMPTY list.')
                 task.wait(5)
             else
-                local questId, questData, current = GetNextIncompleteQuest(questIds)
+                local questId, questData, current, skippedNames = GetNextIncompleteQuest(questIds)
 
                 if not questId then
-                    StatusText = 'All ' .. mode .. ' quests done!'
-                    noti(mode .. ' Quests: all done!')
+                    if skippedNames and #skippedNames > 0 then
+                        local key = table.concat(skippedNames, ', ')
+                        StatusText = 'Waiting on handlers for: ' .. key
+                        if key ~= lastSkippedKey then
+                            warn('[Quests] No handler yet for: ' .. key)
+                            lastSkippedKey = key
+                        end
+                    else
+                        StatusText = 'All ' .. mode .. ' quests done!'
+                        noti(mode .. ' Quests: all done!')
+                        lastSkippedKey = nil
+                    end
                     task.wait(5)
                 else
+                    lastSkippedKey = nil
                     local objective = questData.Objective
                     local amount = objective[2]
 
                     CurrentQuestId = questId
                     local handled, ok, err = RunHandlerFor(questData, objective, amount)
 
-                    if handled then
-                        if not ok then
-                            warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
-                        end
+                    if not ok and handled then
+                        warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
+                    end
 
-                        StatusText = (questData.Name or tostring(questId)) .. ' (0/' .. tostring(amount) .. ')'
+                    StatusText = (questData.Name or tostring(questId)) .. ' (0/' .. tostring(amount) .. ')'
 
-                        while Running and myToken == runToken do
-                            local newCurrent, completed = GetProgress(questId)
-                            StatusText = (questData.Name or tostring(questId)) .. ' (' .. tostring(newCurrent or 0) .. '/' .. tostring(amount) .. ')'
-                            if completed then
-                                pcall(StopCurrentAction, questId, questData)
-                                ClaimQuest(questId)
-                                break
-                            end
-                            task.wait(CheckInterval)
+                    while Running and myToken == runToken do
+                        local newCurrent, completed = GetProgress(questId)
+                        StatusText = (questData.Name or tostring(questId)) .. ' (' .. tostring(newCurrent or 0) .. '/' .. tostring(amount) .. ')'
+                        if completed then
+                            pcall(StopCurrentAction, questId, questData)
+                            ClaimQuest(questId)
+                            break
                         end
-                    else
-                        -- No handler written for this quest's content yet -
-                        -- skip it and move to the next one instead of hanging
-                        warn('[Quests] No handler for: "' .. tostring(questData.Name) .. '" (ID ' .. tostring(questId) .. ', Objective: ' .. objective[1] .. ')')
-                        task.wait(1)
+                        task.wait(CheckInterval)
                     end
                 end
             end
