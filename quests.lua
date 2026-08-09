@@ -414,6 +414,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     local CheckInterval = 2
     local StatusText = 'Idle'
     local lastSkippedKey = nil
+    local firedQuestIds = {} -- hard guarantee: each questId's handler fires AT MOST once per run
 
     local dailyStatusLabel, weeklyStatusLabel
 
@@ -421,6 +422,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         runToken += 1
         local myToken = runToken
         Running = true
+        firedQuestIds = {}
 
         while Running and myToken == runToken do
             local questIds = (mode == 'Daily') and GetActiveDailyQuestIds() or GetActiveWeeklyQuestIds()
@@ -453,25 +455,41 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
 
                     CurrentQuestId = questId
 
-                    if IsInMission() then
+                    local inMission = IsInMission()
+                    warn('[Quests] DEBUG picked "' .. tostring(questData.Name) .. '" (id ' .. tostring(questId)
+                        .. ') | IsInMission=' .. tostring(inMission)
+                        .. ' | alreadyFired=' .. tostring(firedQuestIds[questId] == true))
+
+                    if inMission then
                         -- Already in a mission/dungeon/raid - don't fire
                         -- another teleport on top of it, just wait and
                         -- track progress on whatever you're already doing
                         StatusText = (questData.Name or tostring(questId)) .. ' (already in mission, tracking...)'
+                    elseif firedQuestIds[questId] then
+                        -- Already fired for this quest once this run - do NOT fire again,
+                        -- just keep tracking progress
+                        StatusText = (questData.Name or tostring(questId)) .. ' (waiting, already started)'
                     else
+                        firedQuestIds[questId] = true
                         local handled, ok, err = RunHandlerFor(questData, objective, amount)
                         if not ok and handled then
                             warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
                         end
                         StatusText = (questData.Name or tostring(questId)) .. ' (0/' .. tostring(amount) .. ')'
+                        noti('Quest started: ' .. tostring(questData.Name))
                     end
 
+                    local lastNotifiedCurrent = nil
                     while Running and myToken == runToken do
                         local newCurrent, completed = GetProgress(questId)
                         StatusText = (questData.Name or tostring(questId)) .. ' (' .. tostring(newCurrent or 0) .. '/' .. tostring(amount) .. ')'
+                        if newCurrent ~= lastNotifiedCurrent then
+                            lastNotifiedCurrent = newCurrent
+                        end
                         if completed then
                             pcall(StopCurrentAction, questId, questData)
                             ClaimQuest(questId)
+                            noti('Quest complete: ' .. tostring(questData.Name))
                             break
                         end
                         task.wait(CheckInterval)
