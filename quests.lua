@@ -74,6 +74,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     -- Along the way it also claims anything that's already done but
     -- hasn't been claimed yet (in case it finished on its own).
     local function GetNextIncompleteQuest(questIds)
+        local sawUnhandled = false
         for _, questId in ipairs(questIds) do
             local questData = GetQuestData(questId)
             if questData and not questData.Disabled then
@@ -82,11 +83,12 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                     ClaimQuest(questId)
                 elseif QuestHandlers[questId] then
                     return questId, questData, current
+                else
+                    sawUnhandled = true
                 end
-                -- no handler yet -> skip silently, keep looking
             end
         end
-        return nil
+        return nil, nil, nil, sawUnhandled
     end
 
     -- ========================================================
@@ -495,41 +497,53 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
 
         while Running and myToken == runToken do
             local questIds = (mode == 'Daily') and GetActiveDailyQuestIds() or GetActiveWeeklyQuestIds()
-            local questId, questData, current = GetNextIncompleteQuest(questIds)
+            warn('[Quests] ' .. mode .. ' active quest ids: ' .. table.concat(questIds, ', '))
 
-            if not questId then
-                StatusText = 'All ' .. mode .. ' quests done!'
-                noti(mode .. ' Quests: all done!')
+            if #questIds == 0 then
+                StatusText = 'No active ' .. mode .. ' quests found (check GetActiveQuestIds)'
+                warn('[Quests] ' .. mode .. ': GetActive' .. mode .. 'QuestIds returned an EMPTY list. Nothing to do.')
                 task.wait(5)
             else
-                local objective = questData.Objective
-                local amount = objective[2]
+                local questId, questData, current, sawUnhandled = GetNextIncompleteQuest(questIds)
 
-                CurrentQuestId = questId
-                local handler = QuestHandlers[questId]
-
-                if handler then
-                    StatusText = (questData.Name or questId) .. ' (0/' .. tostring(amount) .. ')'
-                    local ok, err = pcall(handler, questData, amount)
-                    if not ok then
-                        warn('[Quests] Error in handler for ' .. questId .. ': ' .. tostring(err))
+                if not questId then
+                    if sawUnhandled then
+                        StatusText = 'All handled ' .. mode .. ' quests done (some still TODO)'
+                    else
+                        StatusText = 'All ' .. mode .. ' quests done!'
+                        noti(mode .. ' Quests: all done!')
                     end
-
-                    while Running and myToken == runToken do
-                        local newCurrent, completed = GetProgress(questId)
-                        StatusText = (questData.Name or questId) .. ' (' .. tostring(newCurrent or 0) .. '/' .. tostring(amount) .. ')'
-                        if completed then
-                            pcall(StopCurrentAction, questId, questData)
-                            ClaimQuest(questId)
-                            break
-                        end
-                        task.wait(CheckInterval)
-                    end
+                    task.wait(5)
                 else
-                    -- No handler (or still a TODO) - skip this quest and
-                    -- move straight to the next one instead of hanging forever
-                    DefaultHandler(questId, questData, amount)
-                    task.wait(1)
+                    local objective = questData.Objective
+                    local amount = objective[2]
+
+                    CurrentQuestId = questId
+                    local handler = QuestHandlers[questId]
+
+                    if handler then
+                        StatusText = (questData.Name or questId) .. ' (0/' .. tostring(amount) .. ')'
+                        local ok, err = pcall(handler, questData, amount)
+                        if not ok then
+                            warn('[Quests] Error in handler for ' .. questId .. ': ' .. tostring(err))
+                        end
+
+                        while Running and myToken == runToken do
+                            local newCurrent, completed = GetProgress(questId)
+                            StatusText = (questData.Name or questId) .. ' (' .. tostring(newCurrent or 0) .. '/' .. tostring(amount) .. ')'
+                            if completed then
+                                pcall(StopCurrentAction, questId, questData)
+                                ClaimQuest(questId)
+                                break
+                            end
+                            task.wait(CheckInterval)
+                        end
+                    else
+                        -- No handler (or still a TODO) - skip this quest and
+                        -- move straight to the next one instead of hanging forever
+                        DefaultHandler(questId, questData, amount)
+                        task.wait(1)
+                    end
                 end
             end
         end
