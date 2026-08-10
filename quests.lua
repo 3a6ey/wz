@@ -16,30 +16,7 @@
 -- are for.
 -- ============================================================
 
-local plr, rs, Window, Tabs, Toggles, noti, CustomIsInMission = ...
-
--- Detects "am I currently in a mission/dungeon/raid" by reading the same
--- MissionObjective HUD label your script already uses elsewhere (it shows
--- text while in a mission, and is empty when you're not). This works on
--- its own without needing you to wire anything through loadstring - if you
--- DO pass a custom function as the 7th loadstring argument, that one is
--- used instead.
-local function DefaultIsInMission()
-    local ok, gui = pcall(function()
-        return plr:FindFirstChild('PlayerGui')
-            and plr.PlayerGui:FindFirstChild('MissionObjective')
-    end)
-    if not ok or not gui then return false end
-
-    local ok2, label = pcall(function()
-        return gui:FindFirstChild('MissionObjective') and gui.MissionObjective:FindFirstChild('Label')
-    end)
-    if not ok2 or not label then return false end
-
-    return label.Text ~= ''
-end
-
-local IsInMission = CustomIsInMission or DefaultIsInMission
+local plr, rs, Window, Tabs, Toggles, noti = ...
 
 local Quests = require(game.ReplicatedStorage.Shared.Quests)
 local Profile = require(game.ReplicatedStorage.Shared.Profile)
@@ -103,117 +80,121 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     -- id -> handler map doesn't work). Each table below is keyed
     -- by whatever actually identifies the quest: mob name, world
     -- number, dungeon id, or custom event key.
+    --
+    -- IMPORTANT - why this uses game.PlaceId instead of `mission`:
+    -- entering a dungeon actually teleports you to a DIFFERENT
+    -- Roblox Place (each dungeon has its own PlaceId in your
+    -- missionList), which fully restarts your whole script (since
+    -- you have autoload on). That wipes any in-memory "already
+    -- fired" tracking. game.PlaceId, on the other hand, is always
+    -- instantly accurate the moment the script starts on the new
+    -- place - no timing races, no dependency on HUD/GUI state -
+    -- so every raid-firing handler checks it directly before
+    -- firing, and skips firing if you're already on that dungeon's
+    -- place.
     -- ========================================================
+
+    -- Dungeon id -> Roblox PlaceId, pulled from your missionList
+    local DungeonPlaceIds = {
+        [1] = '2978696440',   [49] = '107701891477606', [3] = '4310476380',
+        [2] = '4310464656',   [4] = '4310478830',       [6] = '3383444582',
+        [11] = '3885726701',  [12] = '3994953548',      [13] = '4050468028',
+        [7] = '3165900886',   [14] = '4465988196',      [15] = '4465989351',
+        [16] = '4465989998',  [20] = '4646473427',      [19] = '4646475342',
+        [18] = '4646475570',  [24] = '6386112652',      [35] = '11466514043',
+        [21] = '5703353651',  [25] = '6510862058',      [36] = '11533444995',
+        [23] = '6075085184',  [26] = '6847034886',      [37] = '11644048314',
+        [27] = '7071564842',  [30] = '9944263348',      [31] = '10014664329',
+        [29] = '10089970465', [32] = '10651527284',     [33] = '10727165164',
+        [34] = '10795158121', [41] = '14914700740',     [42] = '14914855930',
+        [43] = '15121292578', [38] = '13988110964',     [39] = '14400549310',
+        [22] = '5862277651',  [17] = '4526768588',      [44] = '18567068844',
+        [45] = '75540798045662', [46] = '81373988789544', [52] = '110769392907898',
+        [47] = '102111805987017', [48] = '138178936582742', [50] = '109614960834199',
+        [51] = '93889085342251',
+    }
+
+    -- Fires StartRaid(raidId, difficulty), but ONLY if you're not
+    -- already sitting on that dungeon's Place. This is what makes
+    -- re-toggling / script restarts safe - no duplicate teleports.
+    local function FireRaidIfNeeded(raidId, difficulty)
+        local targetPlaceId = DungeonPlaceIds[raidId]
+        if targetPlaceId and tostring(game.PlaceId) == tostring(targetPlaceId) then
+            return -- already on this dungeon's place, do nothing
+        end
+        StartRaid(raidId, difficulty)
+    end
 
     -- KillMob / KillMobInWorld / KillAnyMob
     -- Objective args = list of mob names that count (usually 1).
-    -- Keyed by mob name -> function(questData, amount)
-    local MobHandlers = {}
+    -- Keyed by mob name -> {raidId, difficulty}
+    local MobRaid = {}
+    MobRaid["Boarwolf"] = {2, 5}
+    MobRaid["EliteBoarwolf"] = {2, 5}
+    MobRaid["Toucan"] = {3, 5}
+    MobRaid["EarthCrab"] = {4, 5}
+    MobRaid["ElectricCrab"] = {4, 5}
+    MobRaid["FireCrab"] = {4, 5}
+    MobRaid["GrassCobra"] = {1, 5}
+    MobRaid["PoisonCobra"] = {1, 5}
+    MobRaid["Quillodile"] = {12, 1}
+    MobRaid["GoblinSpear"] = {13, 1}
+    MobRaid["GoblinSlingshot"] = {13, 1}
+    MobRaid["GoblinGatekeeper"] = {13, 1}
+    MobRaid["RedGoblinSpear"] = {13, 1}
+    MobRaid["RedGoblinSlingshot"] = {13, 1}
+    MobRaid["RedGoblinGatekeeper"] = {13, 1}
+    MobRaid["IcyGoo"] = {15, 1}
+    MobRaid["SnowRaptor"] = {15, 1}
+    MobRaid["FrostGolem"] = {15, 1}
+    MobRaid["HappyCactus"] = {18, 5}
+    MobRaid["GoldCobra"] = {18, 5}
+    MobRaid["RockGolem"] = {18, 5}
+    MobRaid["PinkBoarwolf"] = {24, 5}
+    MobRaid["BlueGoblinSlingshot"] = {24, 5}
+    MobRaid["BlueGoblinElite"] = {24, 5}
+    MobRaid["BlueGoblinGatekeeper"] = {24, 5}
+    MobRaid["BlossomTree"] = {24, 5}
+    MobRaid["SeaSerpent"] = {36, 5}
+    MobRaid["JellyfishSlime"] = {36, 5}
+    MobRaid["Parrot"] = {36, 5}
+    MobRaid["GoblinGladiator"] = {37, 5}
+    MobRaid["GoblinSpartan"] = {37, 5}
+    MobRaid["Kirin"] = {37, 5}
+    MobRaid["ScorpionGold"] = {37, 5}
+    MobRaid["Gargoyle"] = {26, 5}
+    MobRaid["GargoyleGrey"] = {26, 5}
+    MobRaid["RuinGuardian"] = {30, 5}
+    MobRaid["Alligator"] = {30, 5}
+    MobRaid["Rapigator"] = {30, 5}
 
-    MobHandlers["Boarwolf"] = function(questData, amount)
-        StartRaid(2, 5)
-    end
-    MobHandlers["EliteBoarwolf"] = function(questData, amount)
-        StartRaid(2, 5)
-    end
-    MobHandlers["Toucan"] = function(questData, amount)
-        StartRaid(3, 5)
-    end
-    MobHandlers["EarthCrab"] = function(questData, amount)
-        StartRaid(4, 5)
-    end
-    MobHandlers["ElectricCrab"] = MobHandlers["EarthCrab"]
-    MobHandlers["FireCrab"] = MobHandlers["EarthCrab"]
-    MobHandlers["GrassCobra"] = function(questData, amount)
-        StartRaid(1, 5)
-    end
-    MobHandlers["PoisonCobra"] = MobHandlers["GrassCobra"]
-    MobHandlers["Quillodile"] = function(questData, amount)
-        StartRaid(12, 1)
-    end
-    MobHandlers["GoblinSpear"] = function(questData, amount)
-        StartRaid(13, 1)
-    end
-    MobHandlers["GoblinSlingshot"] = MobHandlers["GoblinSpear"]
-    MobHandlers["GoblinGatekeeper"] = MobHandlers["GoblinSpear"]
-    MobHandlers["RedGoblinSpear"] = function(questData, amount)
-        StartRaid(13, 1)
-    end
-    MobHandlers["RedGoblinSlingshot"] = MobHandlers["RedGoblinSpear"]
-    MobHandlers["RedGoblinGatekeeper"] = MobHandlers["RedGoblinSpear"]
-    MobHandlers["IcyGoo"] = function(questData, amount)
-        StartRaid(15, 1)
-    end
-    MobHandlers["SnowRaptor"] = MobHandlers["IcyGoo"]
-    MobHandlers["FrostGolem"] = MobHandlers["IcyGoo"]
-    MobHandlers["HappyCactus"] = function(questData, amount)
-        StartRaid(18, 5)
-    end
-    MobHandlers["GoldCobra"] = MobHandlers["HappyCactus"]
-    MobHandlers["RockGolem"] = MobHandlers["HappyCactus"]
-    MobHandlers["PinkBoarwolf"] = function(questData, amount)
-        StartRaid(24, 5)
-    end
-    MobHandlers["BlueGoblinSlingshot"] = MobHandlers["PinkBoarwolf"]
-    MobHandlers["BlueGoblinElite"] = MobHandlers["PinkBoarwolf"]
-    MobHandlers["BlueGoblinGatekeeper"] = MobHandlers["PinkBoarwolf"]
-    MobHandlers["BlossomTree"] = MobHandlers["PinkBoarwolf"]
-    MobHandlers["SeaSerpent"] = function(questData, amount)
-        StartRaid(36, 5)
-    end
-    MobHandlers["JellyfishSlime"] = MobHandlers["SeaSerpent"]
-    MobHandlers["Parrot"] = MobHandlers["SeaSerpent"]
-    MobHandlers["GoblinGladiator"] = function(questData, amount)
-        StartRaid(37, 5)
-    end
-    MobHandlers["GoblinSpartan"] = MobHandlers["GoblinGladiator"]
-    MobHandlers["Kirin"] = MobHandlers["GoblinGladiator"]
-    MobHandlers["ScorpionGold"] = MobHandlers["GoblinGladiator"]
-    MobHandlers["Gargoyle"] = function(questData, amount)
-        StartRaid(26, 5)
-    end
-    MobHandlers["GargoyleGrey"] = MobHandlers["Gargoyle"]
-    MobHandlers["RuinGuardian"] = function(questData, amount)
-        StartRaid(30, 5)
-    end
-    MobHandlers["Alligator"] = MobHandlers["RuinGuardian"]
-    MobHandlers["Rapigator"] = MobHandlers["RuinGuardian"]
-
-    -- Used for KillAnyMob (no specific mob name given) and as a
-    -- fallback if a mob isn't in MobHandlers above
-    local function DefaultMobHandler(questData, amount, mobName)
-        StartRaid(38, nil) -- Infinite Tower, counts any kill
+    local function MobHandlerFor(mobName)
+        local raid = mobName and MobRaid[mobName]
+        return function(questData, amount)
+            if raid then
+                FireRaidIfNeeded(raid[1], raid[2])
+            else
+                FireRaidIfNeeded(38, nil) -- Infinite Tower fallback, counts any kill
+            end
+        end
     end
 
     -- DoDungeonInWorld -> "finish any dungeon in World X"
-    -- Keyed by LinkedWorld -> function(questData, amount)
-    local DungeonWorldHandlers = {}
-    DungeonWorldHandlers[1] = function(questData, amount)
-        StartRaid(1, 5)
-    end
-    DungeonWorldHandlers[2] = function(questData, amount)
-        StartRaid(11, 5)
-    end
-    DungeonWorldHandlers[3] = function(questData, amount)
-        StartRaid(15, 1)
-    end
-    DungeonWorldHandlers[4] = function(questData, amount)
-        StartRaid(18, 5)
-    end
-    -- TODO: add 5,6,7,8,9,10 etc as you go
+    -- Keyed by LinkedWorld -> {raidId, difficulty}
+    local DungeonWorldRaid = {
+        [1] = {1, 5},
+        [2] = {11, 5},
+        [3] = {15, 1},
+        [4] = {18, 5},
+        -- TODO: add 5,6,7,8,9,10 etc as you go
+    }
 
     -- DoDungeon -> "defeat dungeon '<Name>' at any difficulty"
-    -- Objective args = {dungeonId}. Keyed by dungeon id.
+    -- Objective args = {dungeonId}. Keyed by dungeon id -> difficulty.
     local DungeonIdHandlers = {}
-    -- DungeonIdHandlers[11] = function(questData, amount) -- Temple of Ruin (World 2)
-    --     -- TODO: your script goes here
-    -- end
-    -- DungeonIdHandlers[26] = function(questData, amount) -- The Underworld (World 7)
-    --     -- TODO: your script goes here
-    -- end
-    -- DungeonIdHandlers[14] = function(questData, amount) -- Mountain Pass (World 3)
-    --     -- TODO: your script goes here
-    -- end
+    -- DungeonIdHandlers[11] = 5  -- Temple of Ruin (World 2)
+    -- DungeonIdHandlers[26] = 5  -- The Underworld (World 7)
+    -- DungeonIdHandlers[14] = 1  -- Mountain Pass (World 3)
 
     -- CompleteWorldEvent -> keyed by LinkedWorld (doing these later per your note)
     local WorldEventHandlers = {}
@@ -241,7 +222,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     --     -- TODO: your script goes here
     -- end
     CustomEventHandlers["CollectEquipmentInDungeon"] = function(questData, amount)
-        StartRaid(2, 5)
+        FireRaidIfNeeded(2, 5)
     end
     CustomEventHandlers["HatchPetEgg"] = function(questData, amount)
         for i = 1, amount do
@@ -252,7 +233,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     --     -- TODO: your script goes here
     -- end
     CustomEventHandlers["CompletedInfiniteTowerFloor"] = function(questData, amount)
-        StartRaid(38, nil)
+        FireRaidIfNeeded(38, nil)
     end
 
     -- DoDungeonWithClass -> Objective args = {classTier}. TODO if you want
@@ -281,9 +262,9 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         local args = objective[3] or {}
 
         if objType == "KillMob" or objType == "KillMobInWorld" or objType == "KillAnyMob" then
-            return true -- always covered, falls back to DefaultMobHandler
+            return true -- always covered, falls back to Infinite Tower
         elseif objType == "DoDungeonInWorld" then
-            return questData.LinkedWorld ~= nil and DungeonWorldHandlers[questData.LinkedWorld] ~= nil
+            return questData.LinkedWorld ~= nil and DungeonWorldRaid[questData.LinkedWorld] ~= nil
         elseif objType == "DoDungeon" then
             local dungeonId = args[1]
             return dungeonId ~= nil and DungeonIdHandlers[dungeonId] ~= nil
@@ -309,7 +290,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     -- ========================================================
     -- DISPATCHER — routes each quest to the right handler above
     -- based on its Objective type + content. You shouldn't need
-    -- to touch this, just fill in the *Handlers tables above.
+    -- to touch this, just fill in the *Handlers/*Raid tables above.
     -- ========================================================
     local function RunHandlerFor(questData, objective, amount)
         local objType = objective[1]
@@ -317,28 +298,23 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
 
         if objType == "KillMob" or objType == "KillMobInWorld" then
             local mobName = args[1]
-            local handler = mobName and MobHandlers[mobName]
-            if handler then
-                return true, pcall(handler, questData, amount)
-            else
-                return true, pcall(DefaultMobHandler, questData, amount, mobName)
-            end
+            return true, pcall(MobHandlerFor(mobName), questData, amount)
 
         elseif objType == "KillAnyMob" then
-            return true, pcall(DefaultMobHandler, questData, amount, nil)
+            return true, pcall(MobHandlerFor(nil), questData, amount)
 
         elseif objType == "DoDungeonInWorld" then
-            local handler = questData.LinkedWorld and DungeonWorldHandlers[questData.LinkedWorld]
-            if handler then
-                return true, pcall(handler, questData, amount)
+            local raid = questData.LinkedWorld and DungeonWorldRaid[questData.LinkedWorld]
+            if raid then
+                return true, pcall(FireRaidIfNeeded, raid[1], raid[2])
             end
             return false
 
         elseif objType == "DoDungeon" then
             local dungeonId = args[1]
-            local handler = dungeonId and DungeonIdHandlers[dungeonId]
-            if handler then
-                return true, pcall(handler, questData, amount)
+            local diff = dungeonId and DungeonIdHandlers[dungeonId]
+            if diff then
+                return true, pcall(FireRaidIfNeeded, dungeonId, diff)
             end
             return false
 
@@ -430,91 +406,107 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     local StatusText = 'Idle'
     local lastSkippedKey = nil
     local firedQuestIds = {} -- hard guarantee: each questId's handler fires AT MOST once per run
+    local currentRunningMode = nil -- 'Daily' | 'Weekly' | 'Both' | nil
 
-    local dailyStatusLabel, weeklyStatusLabel
+    local dailyStatusLabel, weeklyStatusLabel, bothStatusLabel
+
+    -- Picks the next quest to work on. In 'Both' mode, Daily always takes
+    -- priority - Weekly only gets picked once there's nothing left to do
+    -- in Daily (all completed or all still TODO).
+    local function PickQuest(mode)
+        if mode == 'Both' then
+            local dIds = GetActiveDailyQuestIds()
+            if #dIds > 0 then
+                local qId, qData, cur, skipped = GetNextIncompleteQuest(dIds)
+                if qId then return qId, qData, cur, skipped, 'Daily' end
+            end
+            local wIds = GetActiveWeeklyQuestIds()
+            local qId, qData, cur, skipped = GetNextIncompleteQuest(wIds)
+            return qId, qData, cur, skipped, 'Weekly'
+        else
+            local ids = (mode == 'Daily') and GetActiveDailyQuestIds() or GetActiveWeeklyQuestIds()
+            local qId, qData, cur, skipped = GetNextIncompleteQuest(ids)
+            return qId, qData, cur, skipped, mode
+        end
+    end
 
     local function RunLoop(mode)
         runToken += 1
         local myToken = runToken
         Running = true
+        currentRunningMode = mode
         firedQuestIds = {}
 
         while Running and myToken == runToken do
-            local questIds = (mode == 'Daily') and GetActiveDailyQuestIds() or GetActiveWeeklyQuestIds()
+            local questId, questData, current, skippedNames, activeSubMode = PickQuest(mode)
 
-            if #questIds == 0 then
-                StatusText = 'No active ' .. mode .. ' quests found'
-                warn('[Quests] ' .. mode .. ': GetActive' .. mode .. 'QuestIds returned an EMPTY list.')
+            if not questId then
+                if skippedNames and #skippedNames > 0 then
+                    local key = table.concat(skippedNames, ', ')
+                    StatusText = 'Waiting on handlers for: ' .. key
+                    if key ~= lastSkippedKey then
+                        warn('[Quests] No handler yet for: ' .. key)
+                        lastSkippedKey = key
+                    end
+                else
+                    StatusText = 'All ' .. mode .. ' quests done!'
+                    if lastSkippedKey ~= 'DONE_' .. mode then
+                        noti(mode .. ' Quests: all done!')
+                        lastSkippedKey = 'DONE_' .. mode
+                    end
+                end
                 task.wait(5)
             else
-                local questId, questData, current, skippedNames = GetNextIncompleteQuest(questIds)
+                lastSkippedKey = nil
+                local objective = questData.Objective
+                local amount = objective[2]
 
-                if not questId then
-                    if skippedNames and #skippedNames > 0 then
-                        local key = table.concat(skippedNames, ', ')
-                        StatusText = 'Waiting on handlers for: ' .. key
-                        if key ~= lastSkippedKey then
-                            warn('[Quests] No handler yet for: ' .. key)
-                            lastSkippedKey = key
-                        end
-                    else
-                        StatusText = 'All ' .. mode .. ' quests done!'
-                        noti(mode .. ' Quests: all done!')
-                        lastSkippedKey = nil
-                    end
-                    task.wait(5)
+                CurrentQuestId = questId
+
+                if firedQuestIds[questId] then
+                    -- Already fired for this quest once this session - do NOT
+                    -- fire again, just keep tracking progress. Note: for raid
+                    -- quests, FireRaidIfNeeded ALSO checks game.PlaceId itself,
+                    -- so even a fresh script restart (after being teleported
+                    -- into the dungeon's own Place) won't re-fire once you're
+                    -- actually there - this flag is just an extra safety net
+                    -- for non-raid handlers (like egg hatching) within one run.
+                    StatusText = (questData.Name or tostring(questId)) .. ' (waiting, already started)'
                 else
-                    lastSkippedKey = nil
-                    local objective = questData.Objective
-                    local amount = objective[2]
-
-                    CurrentQuestId = questId
-
-                    local inMission = IsInMission()
-                    warn('[Quests] DEBUG picked "' .. tostring(questData.Name) .. '" (id ' .. tostring(questId)
-                        .. ') | IsInMission=' .. tostring(inMission)
-                        .. ' | alreadyFired=' .. tostring(firedQuestIds[questId] == true))
-
-                    if inMission then
-                        -- Already in a mission/dungeon/raid - don't fire
-                        -- another teleport on top of it, just wait and
-                        -- track progress on whatever you're already doing
-                        StatusText = (questData.Name or tostring(questId)) .. ' (already in mission, tracking...)'
-                    elseif firedQuestIds[questId] then
-                        -- Already fired for this quest once this run - do NOT fire again,
-                        -- just keep tracking progress
-                        StatusText = (questData.Name or tostring(questId)) .. ' (waiting, already started)'
-                    else
-                        firedQuestIds[questId] = true
-                        local handled, ok, err = RunHandlerFor(questData, objective, amount)
-                        if not ok and handled then
-                            warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
-                        end
-                        StatusText = (questData.Name or tostring(questId)) .. ' (0/' .. tostring(amount) .. ')'
-                        noti('Quest started: ' .. tostring(questData.Name))
+                    firedQuestIds[questId] = true
+                    local handled, ok, err = RunHandlerFor(questData, objective, amount)
+                    if not ok and handled then
+                        warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
                     end
+                    StatusText = (questData.Name or tostring(questId)) .. ' (0/' .. tostring(amount) .. ')'
+                    noti('Quest started: ' .. tostring(questData.Name))
+                end
 
-                    local lastNotifiedCurrent = nil
-                    while Running and myToken == runToken do
-                        local newCurrent, completed = GetProgress(questId)
-                        StatusText = (questData.Name or tostring(questId)) .. ' (' .. tostring(newCurrent or 0) .. '/' .. tostring(amount) .. ')'
-                        if newCurrent ~= lastNotifiedCurrent then
-                            lastNotifiedCurrent = newCurrent
-                        end
-                        if completed then
-                            pcall(StopCurrentAction, questId, questData)
-                            ClaimQuest(questId)
+                while Running and myToken == runToken do
+                    local newCurrent, completed = GetProgress(questId)
+
+                    -- bail out cleanly if we were stopped during the wait below,
+                    -- without firing any "quest complete" side effects
+                    if not Running or myToken ~= runToken then break end
+
+                    StatusText = (questData.Name or tostring(questId)) .. ' (' .. tostring(newCurrent or 0) .. '/' .. tostring(amount) .. ')'
+
+                    if completed then
+                        pcall(StopCurrentAction, questId, questData)
+                        ClaimQuest(questId)
+                        if Running and myToken == runToken then
                             noti('Quest complete: ' .. tostring(questData.Name))
-                            break
                         end
-                        task.wait(CheckInterval)
+                        break
                     end
+                    task.wait(CheckInterval)
                 end
             end
         end
 
         if myToken == runToken then
             Running = false
+            currentRunningMode = nil
             StatusText = 'Idle'
         end
     end
@@ -522,6 +514,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     local function StopQuests()
         Running = false
         runToken += 1
+        currentRunningMode = nil
         if CurrentQuestId then
             local questData = GetQuestData(CurrentQuestId)
             if questData then
@@ -539,16 +532,15 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         Default = false,
         Callback = function(value)
             if value then
-                if Toggles.autoWeeklyQuests and Toggles.autoWeeklyQuests.Value then
-                    Toggles.autoWeeklyQuests:SetValue(false)
-                end
+                if currentRunningMode == 'Daily' then return end -- already running, ignore duplicate click
+                if Toggles.autoWeeklyQuests and Toggles.autoWeeklyQuests.Value then Toggles.autoWeeklyQuests:SetValue(false) end
+                if Toggles.autoBothQuests and Toggles.autoBothQuests.Value then Toggles.autoBothQuests:SetValue(false) end
                 task.spawn(RunLoop, 'Daily')
             else
-                StopQuests()
+                if currentRunningMode == 'Daily' then StopQuests() end
             end
         end,
     })
-
     DailyQuestsTab:AddDivider()
     dailyStatusLabel = DailyQuestsTab:AddLabel('Status: Idle')
 
@@ -560,31 +552,57 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         Default = false,
         Callback = function(value)
             if value then
-                if Toggles.autoDailyQuests and Toggles.autoDailyQuests.Value then
-                    Toggles.autoDailyQuests:SetValue(false)
-                end
+                if currentRunningMode == 'Weekly' then return end
+                if Toggles.autoDailyQuests and Toggles.autoDailyQuests.Value then Toggles.autoDailyQuests:SetValue(false) end
+                if Toggles.autoBothQuests and Toggles.autoBothQuests.Value then Toggles.autoBothQuests:SetValue(false) end
                 task.spawn(RunLoop, 'Weekly')
             else
-                StopQuests()
+                if currentRunningMode == 'Weekly' then StopQuests() end
             end
         end,
     })
-
     WeeklyQuestsTab:AddDivider()
     weeklyStatusLabel = WeeklyQuestsTab:AddLabel('Status: Idle')
 
-    -- Keeps the status label on the active tab updated
+    -- ========================================================
+    -- Both Tab — does all Daily first, then automatically moves on to Weekly
+    -- ========================================================
+    local BothQuestsTab = QuestsTabbox:AddTab('Both')
+    BothQuestsTab:AddToggle('autoBothQuests', {
+        Text = 'Auto Complete Daily, then Weekly',
+        Default = false,
+        Callback = function(value)
+            if value then
+                if currentRunningMode == 'Both' then return end
+                if Toggles.autoDailyQuests and Toggles.autoDailyQuests.Value then Toggles.autoDailyQuests:SetValue(false) end
+                if Toggles.autoWeeklyQuests and Toggles.autoWeeklyQuests.Value then Toggles.autoWeeklyQuests:SetValue(false) end
+                task.spawn(RunLoop, 'Both')
+            else
+                if currentRunningMode == 'Both' then StopQuests() end
+            end
+        end,
+    })
+    BothQuestsTab:AddDivider()
+    bothStatusLabel = BothQuestsTab:AddLabel('Status: Idle')
+    BothQuestsTab:AddDivider()
+    BothQuestsTab:AddButton({
+        Text = 'Stop All',
+        Func = function()
+            StopQuests()
+            if Toggles.autoDailyQuests then Toggles.autoDailyQuests:SetValue(false) end
+            if Toggles.autoWeeklyQuests then Toggles.autoWeeklyQuests:SetValue(false) end
+            if Toggles.autoBothQuests then Toggles.autoBothQuests:SetValue(false) end
+        end,
+        DoubleClick = true,
+    })
+
+    -- Keeps whichever tab is active showing live status
     task.spawn(function()
         while true do
-            if Running and CurrentQuestId then
-                local label = (Toggles.autoDailyQuests and Toggles.autoDailyQuests.Value) and dailyStatusLabel or weeklyStatusLabel
-                if label and label.SetText then
-                    label:SetText('Status: ' .. StatusText)
-                end
-            else
-                if dailyStatusLabel and dailyStatusLabel.SetText then dailyStatusLabel:SetText('Status: Idle') end
-                if weeklyStatusLabel and weeklyStatusLabel.SetText then weeklyStatusLabel:SetText('Status: Idle') end
-            end
+            local text = 'Status: ' .. (Running and StatusText or 'Idle')
+            if dailyStatusLabel and dailyStatusLabel.SetText then dailyStatusLabel:SetText(currentRunningMode == 'Daily' and text or 'Status: Idle') end
+            if weeklyStatusLabel and weeklyStatusLabel.SetText then weeklyStatusLabel:SetText(currentRunningMode == 'Weekly' and text or 'Status: Idle') end
+            if bothStatusLabel and bothStatusLabel.SetText then bothStatusLabel:SetText(currentRunningMode == 'Both' and text or 'Status: Idle') end
             task.wait(1)
         end
     end)
