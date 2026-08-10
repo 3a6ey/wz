@@ -567,6 +567,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     -- ========================================================
     BothQuestsTab:AddToggle('autoBothQuests', {
         Text = 'Auto Complete Daily, then Weekly',
+        Tooltip = 'Works through your Daily quests first, then automatically moves on to Weekly once Daily is done',
         Default = false,
         Callback = function(value)
             if value then
@@ -578,17 +579,6 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                 if currentRunningMode == 'Both' then StopQuests() end
             end
         end,
-    })
-    BothQuestsTab:AddDivider()
-    BothQuestsTab:AddButton({
-        Text = 'Stop All',
-        Func = function()
-            StopQuests()
-            if Toggles.autoDailyQuests then Toggles.autoDailyQuests:SetValue(false) end
-            if Toggles.autoWeeklyQuests then Toggles.autoWeeklyQuests:SetValue(false) end
-            if Toggles.autoBothQuests then Toggles.autoBothQuests:SetValue(false) end
-        end,
-        DoubleClick = true,
     })
 
     -- ========================================================
