@@ -35,7 +35,11 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         return Quests:GetQuestDataFromID(questId)
     end
 
-    -- current, isCompleted
+    -- IMPORTANT: the 2nd return value here is NOT "is this quest done" -
+    -- it's "has the reward already been claimed" (confirmed straight from
+    -- the game's own quest GUI script: `value, claimed = GetQuestProgress(...)`).
+    -- "Done" is determined by comparing `value` against the quest's
+    -- required amount (Objective[2]) yourself - see GetQuestStatus below.
     local function GetProgress(questId)
         return Quests:GetQuestProgress(plr, questId)
     end
@@ -54,16 +58,56 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         return ids
     end
 
-    -- {questId, questId, ...} in the order returned by GetWeeklyQuestData
-    local function GetActiveWeeklyQuestIds()
-        local data = rs.Quests_GetWeeklyQuestData:InvokeServer()
+    -- Fetches the full Weekly quest payload once. IMPORTANT: Weekly quests
+    -- do NOT use GetQuestProgress at all - the real game GUI reads
+    -- progress/claimed straight off this payload's per-quest {id, value,
+    -- claimed, isVIP} entries instead. We fetch this once per loop pass
+    -- and reuse it for both the id list AND progress checks, to stay
+    -- consistent and avoid extra InvokeServer calls.
+    local function GetWeeklyData()
+        local ok, data = pcall(function()
+            return rs.Quests_GetWeeklyQuestData:InvokeServer()
+        end)
+        if ok then return data end
+        return nil
+    end
+
+    local function GetActiveWeeklyQuestIds(weeklyData)
         local ids = {}
-        if data and data.quests then
-            for _, q in ipairs(data.quests) do
+        if weeklyData and weeklyData.quests then
+            for _, q in ipairs(weeklyData.quests) do
                 table.insert(ids, q.id)
             end
         end
         return ids
+    end
+
+    local function GetWeeklyQuestEntry(weeklyData, questId)
+        if not weeklyData or not weeklyData.quests then return nil end
+        for _, q in ipairs(weeklyData.quests) do
+            if q.id == questId then return q end
+        end
+        return nil
+    end
+
+    -- Unified status check for both Daily and Weekly quests.
+    -- Returns: current progress, whether it's reached the target amount,
+    -- and whether the reward's already been claimed.
+    local function GetQuestStatus(questId, questData, isWeekly, weeklyData)
+        local required = questData.Objective[2]
+        local current, claimed
+
+        if isWeekly then
+            local entry = GetWeeklyQuestEntry(weeklyData, questId)
+            current = entry and entry.value or 0
+            claimed = entry and entry.claimed or false
+        else
+            local c, cl = GetProgress(questId)
+            current = c or 0
+            claimed = cl or false
+        end
+
+        return current, (current >= required), claimed
     end
 
     -- Tracks which questIds we've already claimed this session, so we
@@ -390,14 +434,16 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     -- same unhandled quest over and over.
     -- Along the way it also claims anything that's already done but
     -- hasn't been claimed yet (in case it finished on its own).
-    local function GetNextIncompleteQuest(questIds, isWeekly)
+    local function GetNextIncompleteQuest(questIds, isWeekly, weeklyData)
         local skippedNames = {}
         for _, questId in ipairs(questIds) do
             local questData = GetQuestData(questId)
             if questData and not questData.Disabled then
-                local current, completed = GetProgress(questId)
-                if completed then
-                    ClaimQuest(questId, isWeekly, questData.Name)
+                local current, isDone, claimed = GetQuestStatus(questId, questData, isWeekly, weeklyData)
+                if isDone then
+                    if not claimed then
+                        ClaimQuest(questId, isWeekly, questData.Name)
+                    end
                 else
                     local objective = questData.Objective
                     if CanHandle(questData, objective) then
@@ -431,7 +477,8 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     local function PickQuest(mode)
         if mode == 'Both' then
             local dIds = GetActiveDailyQuestIds()
-            local wIds = GetActiveWeeklyQuestIds()
+            local weeklyData = GetWeeklyData()
+            local wIds = GetActiveWeeklyQuestIds(weeklyData)
 
             local dQ, dData, dCur, dSkip
             if #dIds > 0 then
@@ -441,7 +488,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
 
             local wQ, wData, wCur, wSkip
             if #wIds > 0 then
-                wQ, wData, wCur, wSkip = GetNextIncompleteQuest(wIds, true)
+                wQ, wData, wCur, wSkip = GetNextIncompleteQuest(wIds, true, weeklyData)
             end
             wSkip = wSkip or {}
 
@@ -452,9 +499,14 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             for _, n in ipairs(dSkip) do table.insert(merged, n) end
             for _, n in ipairs(wSkip) do table.insert(merged, n) end
             return nil, nil, nil, merged
-        else
-            local ids = (mode == 'Daily') and GetActiveDailyQuestIds() or GetActiveWeeklyQuestIds()
-            local qId, qData, cur, skipped = GetNextIncompleteQuest(ids, mode == 'Weekly')
+        elseif mode == 'Daily' then
+            local ids = GetActiveDailyQuestIds()
+            local qId, qData, cur, skipped = GetNextIncompleteQuest(ids, false)
+            return qId, qData, cur, skipped, mode
+        else -- 'Weekly'
+            local weeklyData = GetWeeklyData()
+            local ids = GetActiveWeeklyQuestIds(weeklyData)
+            local qId, qData, cur, skipped = GetNextIncompleteQuest(ids, true, weeklyData)
             return qId, qData, cur, skipped, mode
         end
     end
@@ -508,15 +560,19 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
                 end
 
                 while Running and myToken == runToken do
-                    local newCurrent, completed = GetProgress(questId)
+                    local isWeekly = (activeSubMode == 'Weekly')
+                    local weeklyData = isWeekly and GetWeeklyData() or nil
+                    local newCurrent, isDone, claimed = GetQuestStatus(questId, questData, isWeekly, weeklyData)
 
                     -- bail out cleanly if we were stopped during the wait below,
                     -- without firing any "quest complete" side effects
                     if not Running or myToken ~= runToken then break end
 
-                    if completed then
+                    if isDone then
                         pcall(StopCurrentAction, questId, questData)
-                        ClaimQuest(questId, activeSubMode == 'Weekly', questData.Name)
+                        if not claimed then
+                            ClaimQuest(questId, isWeekly, questData.Name)
+                        end
                         break
                     end
 
