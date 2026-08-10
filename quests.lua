@@ -23,6 +23,7 @@ local Profile = require(game.ReplicatedStorage.Shared.Profile)
 
 Tabs.Quests = Window:AddTab('Quests', 'scroll-text')
 local QuestsTabbox = Tabs.Quests:AddLeftTabbox('questsBox')
+local BothQuestsTab = QuestsTabbox:AddTab('Both')
 local DailyQuestsTab = QuestsTabbox:AddTab('Daily')
 local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
 
@@ -70,6 +71,45 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     -- Claims the reward for a finished quest
     local function ClaimQuest(questId)
         rs.Quests_ClaimQuest:FireServer(questId)
+    end
+
+    -- ========================================================
+    -- Daily Login auto-claim
+    -- --------------------------------------------------------
+    -- Separate from quest rewards - this is the "log in today"
+    -- bonus. GetDailyLogin checks your current status, then
+    -- AwardDailyLogin claims it. We don't know the exact shape of
+    -- what GetDailyLogin returns, so this dumps it to the console
+    -- once so we can refine the "already claimed" check together
+    -- if needed - for now it just tries to award every time this
+    -- runs, which should be harmless even if already claimed.
+    -- ========================================================
+    local dailyLoginTried = false
+    local function TryClaimDailyLogin()
+        if dailyLoginTried then return end
+        dailyLoginTried = true
+
+        local ok, info = pcall(function()
+            return rs.Profile_GetDailyLogin:InvokeServer()
+        end)
+        if ok then
+            local dump = info
+            if typeof(info) == 'table' then
+                pcall(function() dump = game:GetService('HttpService'):JSONEncode(info) end)
+            end
+            warn('[Quests] DailyLogin status: ' .. tostring(dump))
+        else
+            warn('[Quests] Failed to check DailyLogin status: ' .. tostring(info))
+        end
+
+        local ok2, err2 = pcall(function()
+            rs.Profile_AwardDailyLogin:FireServer()
+        end)
+        if ok2 then
+            noti('Daily login reward claimed!')
+        else
+            warn('[Quests] Failed to award DailyLogin (probably already claimed): ' .. tostring(err2))
+        end
     end
 
     -- ========================================================
@@ -403,12 +443,9 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     local Running = false
     local CurrentQuestId = nil
     local CheckInterval = 2
-    local StatusText = 'Idle'
     local lastSkippedKey = nil
     local firedQuestIds = {} -- hard guarantee: each questId's handler fires AT MOST once per run
     local currentRunningMode = nil -- 'Daily' | 'Weekly' | 'Both' | nil
-
-    local dailyStatusLabel, weeklyStatusLabel, bothStatusLabel
 
     -- Picks the next quest to work on. In 'Both' mode, Daily always takes
     -- priority - Weekly only gets picked once there's nothing left to do
@@ -443,13 +480,11 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
             if not questId then
                 if skippedNames and #skippedNames > 0 then
                     local key = table.concat(skippedNames, ', ')
-                    StatusText = 'Waiting on handlers for: ' .. key
                     if key ~= lastSkippedKey then
                         warn('[Quests] No handler yet for: ' .. key)
                         lastSkippedKey = key
                     end
                 else
-                    StatusText = 'All ' .. mode .. ' quests done!'
                     if lastSkippedKey ~= 'DONE_' .. mode then
                         noti(mode .. ' Quests: all done!')
                         lastSkippedKey = 'DONE_' .. mode
@@ -463,25 +498,24 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
 
                 CurrentQuestId = questId
 
-                if firedQuestIds[questId] then
-                    -- Already fired for this quest once this session - do NOT
-                    -- fire again, just keep tracking progress. Note: for raid
-                    -- quests, FireRaidIfNeeded ALSO checks game.PlaceId itself,
-                    -- so even a fresh script restart (after being teleported
-                    -- into the dungeon's own Place) won't re-fire once you're
-                    -- actually there - this flag is just an extra safety net
-                    -- for non-raid handlers (like egg hatching) within one run.
-                    StatusText = (questData.Name or tostring(questId)) .. ' (waiting, already started)'
-                else
+                if not firedQuestIds[questId] then
+                    -- Not fired yet this session - kick off the handler.
+                    -- Note: for raid quests, FireRaidIfNeeded ALSO checks
+                    -- game.PlaceId itself, so even a fresh script restart
+                    -- (after being teleported into the dungeon's own Place)
+                    -- won't re-fire once you're actually there - this flag
+                    -- is just an extra safety net for non-raid handlers
+                    -- (like egg hatching) within one run.
                     firedQuestIds[questId] = true
                     local handled, ok, err = RunHandlerFor(questData, objective, amount)
                     if not ok and handled then
                         warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
                     end
-                    StatusText = (questData.Name or tostring(questId)) .. ' (0/' .. tostring(amount) .. ')'
-                    noti('Quest started: ' .. tostring(questData.Name))
+                    local remaining = amount - (current or 0)
+                    noti((questData.Name or tostring(questId)) .. ' — ' .. tostring(remaining) .. ' left')
                 end
 
+                local lastRemaining = nil
                 while Running and myToken == runToken do
                     local newCurrent, completed = GetProgress(questId)
 
@@ -489,15 +523,19 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                     -- without firing any "quest complete" side effects
                     if not Running or myToken ~= runToken then break end
 
-                    StatusText = (questData.Name or tostring(questId)) .. ' (' .. tostring(newCurrent or 0) .. '/' .. tostring(amount) .. ')'
-
                     if completed then
                         pcall(StopCurrentAction, questId, questData)
                         ClaimQuest(questId)
                         if Running and myToken == runToken then
-                            noti('Quest complete: ' .. tostring(questData.Name))
+                            noti((questData.Name or tostring(questId)) .. ' — complete!')
                         end
                         break
+                    end
+
+                    local remaining = amount - (newCurrent or 0)
+                    if remaining ~= lastRemaining then
+                        lastRemaining = remaining
+                        noti((questData.Name or tostring(questId)) .. ' — ' .. tostring(remaining) .. ' left')
                     end
                     task.wait(CheckInterval)
                 end
@@ -507,7 +545,6 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         if myToken == runToken then
             Running = false
             currentRunningMode = nil
-            StatusText = 'Idle'
         end
     end
 
@@ -525,6 +562,36 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     end
 
     -- ========================================================
+    -- Both Tab — does all Daily first, then automatically moves on
+    -- to Weekly. This is the recommended default, so it comes first.
+    -- ========================================================
+    BothQuestsTab:AddToggle('autoBothQuests', {
+        Text = 'Auto Complete Daily, then Weekly',
+        Default = false,
+        Callback = function(value)
+            if value then
+                if currentRunningMode == 'Both' then return end -- already running, ignore duplicate click
+                if Toggles.autoDailyQuests and Toggles.autoDailyQuests.Value then Toggles.autoDailyQuests:SetValue(false) end
+                if Toggles.autoWeeklyQuests and Toggles.autoWeeklyQuests.Value then Toggles.autoWeeklyQuests:SetValue(false) end
+                task.spawn(RunLoop, 'Both')
+            else
+                if currentRunningMode == 'Both' then StopQuests() end
+            end
+        end,
+    })
+    BothQuestsTab:AddDivider()
+    BothQuestsTab:AddButton({
+        Text = 'Stop All',
+        Func = function()
+            StopQuests()
+            if Toggles.autoDailyQuests then Toggles.autoDailyQuests:SetValue(false) end
+            if Toggles.autoWeeklyQuests then Toggles.autoWeeklyQuests:SetValue(false) end
+            if Toggles.autoBothQuests then Toggles.autoBothQuests:SetValue(false) end
+        end,
+        DoubleClick = true,
+    })
+
+    -- ========================================================
     -- Daily Tab
     -- ========================================================
     DailyQuestsTab:AddToggle('autoDailyQuests', {
@@ -532,7 +599,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         Default = false,
         Callback = function(value)
             if value then
-                if currentRunningMode == 'Daily' then return end -- already running, ignore duplicate click
+                if currentRunningMode == 'Daily' then return end
                 if Toggles.autoWeeklyQuests and Toggles.autoWeeklyQuests.Value then Toggles.autoWeeklyQuests:SetValue(false) end
                 if Toggles.autoBothQuests and Toggles.autoBothQuests.Value then Toggles.autoBothQuests:SetValue(false) end
                 task.spawn(RunLoop, 'Daily')
@@ -541,8 +608,6 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
             end
         end,
     })
-    DailyQuestsTab:AddDivider()
-    dailyStatusLabel = DailyQuestsTab:AddLabel('Status: Idle')
 
     -- ========================================================
     -- Weekly Tab
@@ -561,49 +626,10 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
             end
         end,
     })
-    WeeklyQuestsTab:AddDivider()
-    weeklyStatusLabel = WeeklyQuestsTab:AddLabel('Status: Idle')
 
-    -- ========================================================
-    -- Both Tab — does all Daily first, then automatically moves on to Weekly
-    -- ========================================================
-    local BothQuestsTab = QuestsTabbox:AddTab('Both')
-    BothQuestsTab:AddToggle('autoBothQuests', {
-        Text = 'Auto Complete Daily, then Weekly',
-        Default = false,
-        Callback = function(value)
-            if value then
-                if currentRunningMode == 'Both' then return end
-                if Toggles.autoDailyQuests and Toggles.autoDailyQuests.Value then Toggles.autoDailyQuests:SetValue(false) end
-                if Toggles.autoWeeklyQuests and Toggles.autoWeeklyQuests.Value then Toggles.autoWeeklyQuests:SetValue(false) end
-                task.spawn(RunLoop, 'Both')
-            else
-                if currentRunningMode == 'Both' then StopQuests() end
-            end
-        end,
-    })
-    BothQuestsTab:AddDivider()
-    bothStatusLabel = BothQuestsTab:AddLabel('Status: Idle')
-    BothQuestsTab:AddDivider()
-    BothQuestsTab:AddButton({
-        Text = 'Stop All',
-        Func = function()
-            StopQuests()
-            if Toggles.autoDailyQuests then Toggles.autoDailyQuests:SetValue(false) end
-            if Toggles.autoWeeklyQuests then Toggles.autoWeeklyQuests:SetValue(false) end
-            if Toggles.autoBothQuests then Toggles.autoBothQuests:SetValue(false) end
-        end,
-        DoubleClick = true,
-    })
-
-    -- Keeps whichever tab is active showing live status
+    -- Try to claim the daily login bonus once, shortly after the module loads
     task.spawn(function()
-        while true do
-            local text = 'Status: ' .. (Running and StatusText or 'Idle')
-            if dailyStatusLabel and dailyStatusLabel.SetText then dailyStatusLabel:SetText(currentRunningMode == 'Daily' and text or 'Status: Idle') end
-            if weeklyStatusLabel and weeklyStatusLabel.SetText then weeklyStatusLabel:SetText(currentRunningMode == 'Weekly' and text or 'Status: Idle') end
-            if bothStatusLabel and bothStatusLabel.SetText then bothStatusLabel:SetText(currentRunningMode == 'Both' and text or 'Status: Idle') end
-            task.wait(1)
-        end
+        task.wait(2)
+        pcall(TryClaimDailyLogin)
     end)
 end)()
