@@ -16,15 +16,30 @@
 -- are for.
 -- ============================================================
 
-local plr, rs, Window, Tabs, Toggles, noti, IsInMission = ...
+local plr, rs, Window, Tabs, Toggles, noti, CustomIsInMission = ...
 
--- IsInMission should be a function you pass in that returns true/false
--- for whether you're currently in a mission/dungeon/raid. In your main
--- script `mission` is local, so pass a small wrapper like:
---   loadstring(...)(plr, rs, Window, Tabs, Toggles, noti, function() return mission ~= nil end)
--- If you don't pass one, quests will still work, they just won't check
--- "am I already in the right place" before teleporting.
-IsInMission = IsInMission or function() return false end
+-- Detects "am I currently in a mission/dungeon/raid" by reading the same
+-- MissionObjective HUD label your script already uses elsewhere (it shows
+-- text while in a mission, and is empty when you're not). This works on
+-- its own without needing you to wire anything through loadstring - if you
+-- DO pass a custom function as the 7th loadstring argument, that one is
+-- used instead.
+local function DefaultIsInMission()
+    local ok, gui = pcall(function()
+        return plr:FindFirstChild('PlayerGui')
+            and plr.PlayerGui:FindFirstChild('MissionObjective')
+    end)
+    if not ok or not gui then return false end
+
+    local ok2, label = pcall(function()
+        return gui:FindFirstChild('MissionObjective') and gui.MissionObjective:FindFirstChild('Label')
+    end)
+    if not ok2 or not label then return false end
+
+    return label.Text ~= ''
+end
+
+local IsInMission = CustomIsInMission or DefaultIsInMission
 
 local Quests = require(game.ReplicatedStorage.Shared.Quests)
 local Profile = require(game.ReplicatedStorage.Shared.Profile)
