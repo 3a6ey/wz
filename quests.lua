@@ -23,9 +23,7 @@ local Profile = require(game.ReplicatedStorage.Shared.Profile)
 
 Tabs.Quests = Window:AddTab('Quests', 'scroll-text')
 local QuestsTabbox = Tabs.Quests:AddLeftTabbox('questsBox')
-local BothQuestsTab = QuestsTabbox:AddTab('Both')
-local DailyQuestsTab = QuestsTabbox:AddTab('Daily')
-local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
+local QuestsMainTab = QuestsTabbox:AddTab('Quests')
 
 -- Quests Tab
 ;(function()
@@ -68,47 +66,25 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         return ids
     end
 
-    -- Claims the reward for a finished quest
-    local function ClaimQuest(questId)
+    -- Tracks which questIds we've already claimed this session, so we
+    -- don't spam FireServer/noti() repeatedly for the same quest while
+    -- waiting for the server to process the claim.
+    local claimedQuestIds = {}
+
+    -- Claims the reward for a finished quest. If it's a Weekly quest,
+    -- also tries to claim the Weekly Progress (points/tier) reward,
+    -- since finishing a weekly quest is what unlocks those.
+    local function ClaimQuest(questId, isWeekly, questName)
+        if claimedQuestIds[questId] then return end
+        claimedQuestIds[questId] = true
+
         rs.Quests_ClaimQuest:FireServer(questId)
-    end
+        noti((questName or tostring(questId)) .. ' — claimed!')
 
-    -- ========================================================
-    -- Daily Login auto-claim
-    -- --------------------------------------------------------
-    -- Separate from quest rewards - this is the "log in today"
-    -- bonus. GetDailyLogin checks your current status, then
-    -- AwardDailyLogin claims it. We don't know the exact shape of
-    -- what GetDailyLogin returns, so this dumps it to the console
-    -- once so we can refine the "already claimed" check together
-    -- if needed - for now it just tries to award every time this
-    -- runs, which should be harmless even if already claimed.
-    -- ========================================================
-    local dailyLoginTried = false
-    local function TryClaimDailyLogin()
-        if dailyLoginTried then return end
-        dailyLoginTried = true
-
-        local ok, info = pcall(function()
-            return rs.Profile_GetDailyLogin:InvokeServer()
-        end)
-        if ok then
-            local dump = info
-            if typeof(info) == 'table' then
-                pcall(function() dump = game:GetService('HttpService'):JSONEncode(info) end)
-            end
-            warn('[Quests] DailyLogin status: ' .. tostring(dump))
-        else
-            warn('[Quests] Failed to check DailyLogin status: ' .. tostring(info))
-        end
-
-        local ok2, err2 = pcall(function()
-            rs.Profile_AwardDailyLogin:FireServer()
-        end)
-        if ok2 then
-            noti('Daily login reward claimed!')
-        else
-            warn('[Quests] Failed to award DailyLogin (probably already claimed): ' .. tostring(err2))
+        if isWeekly then
+            pcall(function()
+                rs.Quests_ClaimWeeklyReward:FireServer()
+            end)
         end
     end
 
@@ -414,14 +390,14 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     -- same unhandled quest over and over.
     -- Along the way it also claims anything that's already done but
     -- hasn't been claimed yet (in case it finished on its own).
-    local function GetNextIncompleteQuest(questIds)
+    local function GetNextIncompleteQuest(questIds, isWeekly)
         local skippedNames = {}
         for _, questId in ipairs(questIds) do
             local questData = GetQuestData(questId)
             if questData and not questData.Disabled then
                 local current, completed = GetProgress(questId)
                 if completed then
-                    ClaimQuest(questId)
+                    ClaimQuest(questId, isWeekly, questData.Name)
                 else
                     local objective = questData.Objective
                     if CanHandle(questData, objective) then
@@ -447,22 +423,38 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     local firedQuestIds = {} -- hard guarantee: each questId's handler fires AT MOST once per run
     local currentRunningMode = nil -- 'Daily' | 'Weekly' | 'Both' | nil
 
-    -- Picks the next quest to work on. In 'Both' mode, Daily always takes
-    -- priority - Weekly only gets picked once there's nothing left to do
-    -- in Daily (all completed or all still TODO).
+    -- Picks the next quest to work on. In 'Both' mode, BOTH pools get
+    -- scanned every cycle (so completed Weekly quests get claimed even
+    -- while Daily is still in progress, and vice versa) - Daily just
+    -- gets priority for what to actively WORK ON when both have
+    -- something available.
     local function PickQuest(mode)
         if mode == 'Both' then
             local dIds = GetActiveDailyQuestIds()
-            if #dIds > 0 then
-                local qId, qData, cur, skipped = GetNextIncompleteQuest(dIds)
-                if qId then return qId, qData, cur, skipped, 'Daily' end
-            end
             local wIds = GetActiveWeeklyQuestIds()
-            local qId, qData, cur, skipped = GetNextIncompleteQuest(wIds)
-            return qId, qData, cur, skipped, 'Weekly'
+
+            local dQ, dData, dCur, dSkip
+            if #dIds > 0 then
+                dQ, dData, dCur, dSkip = GetNextIncompleteQuest(dIds, false)
+            end
+            dSkip = dSkip or {}
+
+            local wQ, wData, wCur, wSkip
+            if #wIds > 0 then
+                wQ, wData, wCur, wSkip = GetNextIncompleteQuest(wIds, true)
+            end
+            wSkip = wSkip or {}
+
+            if dQ then return dQ, dData, dCur, dSkip, 'Daily' end
+            if wQ then return wQ, wData, wCur, wSkip, 'Weekly' end
+
+            local merged = {}
+            for _, n in ipairs(dSkip) do table.insert(merged, n) end
+            for _, n in ipairs(wSkip) do table.insert(merged, n) end
+            return nil, nil, nil, merged
         else
             local ids = (mode == 'Daily') and GetActiveDailyQuestIds() or GetActiveWeeklyQuestIds()
-            local qId, qData, cur, skipped = GetNextIncompleteQuest(ids)
+            local qId, qData, cur, skipped = GetNextIncompleteQuest(ids, mode == 'Weekly')
             return qId, qData, cur, skipped, mode
         end
     end
@@ -497,6 +489,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                 local amount = objective[2]
 
                 CurrentQuestId = questId
+                local lastRemaining = amount - (current or 0)
 
                 if not firedQuestIds[questId] then
                     -- Not fired yet this session - kick off the handler.
@@ -511,11 +504,9 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
                     if not ok and handled then
                         warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
                     end
-                    local remaining = amount - (current or 0)
-                    noti((questData.Name or tostring(questId)) .. ' — ' .. tostring(remaining) .. ' left')
+                    noti((questData.Name or tostring(questId)) .. ' — ' .. tostring(lastRemaining) .. ' left')
                 end
 
-                local lastRemaining = nil
                 while Running and myToken == runToken do
                     local newCurrent, completed = GetProgress(questId)
 
@@ -525,10 +516,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
 
                     if completed then
                         pcall(StopCurrentAction, questId, questData)
-                        ClaimQuest(questId)
-                        if Running and myToken == runToken then
-                            noti((questData.Name or tostring(questId)) .. ' — complete!')
-                        end
+                        ClaimQuest(questId, activeSubMode == 'Weekly', questData.Name)
                         break
                     end
 
@@ -562,10 +550,10 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
     end
 
     -- ========================================================
-    -- Both Tab — does all Daily first, then automatically moves on
-    -- to Weekly. This is the recommended default, so it comes first.
+    -- Quests Tab — Both first (recommended default), then a divider,
+    -- then Daily and Weekly for running them individually.
     -- ========================================================
-    BothQuestsTab:AddToggle('autoBothQuests', {
+    QuestsMainTab:AddToggle('autoBothQuests', {
         Text = 'Auto Complete Daily, then Weekly',
         Tooltip = 'Works through your Daily quests first, then automatically moves on to Weekly once Daily is done',
         Default = false,
@@ -581,10 +569,9 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         end,
     })
 
-    -- ========================================================
-    -- Daily Tab
-    -- ========================================================
-    DailyQuestsTab:AddToggle('autoDailyQuests', {
+    QuestsMainTab:AddDivider()
+
+    QuestsMainTab:AddToggle('autoDailyQuests', {
         Text = 'Auto Complete Daily Quests',
         Default = false,
         Callback = function(value)
@@ -599,10 +586,7 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
         end,
     })
 
-    -- ========================================================
-    -- Weekly Tab
-    -- ========================================================
-    WeeklyQuestsTab:AddToggle('autoWeeklyQuests', {
+    QuestsMainTab:AddToggle('autoWeeklyQuests', {
         Text = 'Auto Complete Weekly Quests',
         Default = false,
         Callback = function(value)
@@ -616,10 +600,4 @@ local WeeklyQuestsTab = QuestsTabbox:AddTab('Weekly')
             end
         end,
     })
-
-    -- Try to claim the daily login bonus once, shortly after the module loads
-    task.spawn(function()
-        task.wait(2)
-        pcall(TryClaimDailyLogin)
-    end)
 end)()
