@@ -308,20 +308,60 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         FireRaidIfNeeded(38, nil)
     end
 
-    -- DoDungeonWithClass -> Objective args = {classTier}. TODO if you want
-    -- to switch classes automatically; otherwise it'll just be skipped.
+    -- DoDungeonWithClass -> Objective args = {classTier}. Need to be playing
+    -- a class of that tier when clearing ANY dungeon - so: remember your
+    -- current class, switch to a class of the right tier, clear a dungeon,
+    -- then switch back once the quest is done (see StopCurrentAction below).
+    -- Fill in more tiers as you figure out which class belongs to each.
+    local TierToClass = {
+        [2] = "IcefireMage",
+        [4] = "Archer",
+    }
+    local classBeforeSwitch = nil -- remembered so we can switch back after
+
+    local function DungeonWithClassHandler(questData, amount, tier)
+        local className = TierToClass[tier]
+        if not className then
+            warn('[Quests] No class mapped for tier ' .. tostring(tier))
+            return
+        end
+        local profile = Profile:GetProfile(plr)
+        classBeforeSwitch = profile and profile.Class and profile.Class.Value
+
+        rs.Teleport_TeleportToHub:FireServer(20) -- World 3 hub
+        rs.Profile_SwitchClass:FireServer(className)
+        FireRaidIfNeeded(15, 1) -- World 3's dungeon - any dungeon counts for this quest type
+    end
+
     local DungeonWithClassHandlers = {}
-    -- DungeonWithClassHandlers[2] = function(questData, amount) -- TODO end
-    -- DungeonWithClassHandlers[4] = function(questData, amount) -- TODO end
+    DungeonWithClassHandlers[2] = function(questData, amount)
+        DungeonWithClassHandler(questData, amount, 2)
+    end
+    DungeonWithClassHandlers[4] = function(questData, amount)
+        DungeonWithClassHandler(questData, amount, 4)
+    end
 
-    -- DoDungeonWithWorldAndDifficulty -> keyed by LinkedWorld (args = {difficulty})
-    local DungeonWorldDifficultyHandlers = {}
-    -- DungeonWorldDifficultyHandlers[2] = function(questData, amount, difficulty) -- TODO end
-    -- DungeonWorldDifficultyHandlers[6] = function(questData, amount, difficulty) -- TODO end
+    -- DoDungeonWithWorldAndDifficulty -> "Complete N Challenge Dungeons in World X"
+    -- Objective args = {requiredDifficulty}. Reuses the same dungeon id as
+    -- DoDungeonInWorld for that world, just fired with the SPECIFIC
+    -- difficulty this quest asks for instead of the world's default one -
+    -- works for any world already listed in DungeonWorldRaid above without
+    -- needing a separate entry per world.
+    local function DungeonWorldWithDifficultyHandler(questData, amount, difficulty)
+        local raid = questData.LinkedWorld and DungeonWorldRaid[questData.LinkedWorld]
+        if raid then
+            FireRaidIfNeeded(raid[1], difficulty)
+        end
+    end
 
-    -- DoRandomDungeonWithDifficulty -> Objective args = {difficulty}
+    -- DoRandomDungeonWithDifficulty -> "Complete any Dungeon from the
+    -- Nightmare Portals". These are the 3 rotating Nightmare Dungeon ids
+    -- from your main script's Nightmare Dungeons buttons - any one of
+    -- them counts, so just pick one at random.
+    local NightmareDungeonIds = {1005, 1006, 1007}
     local function RandomDungeonHandler(questData, amount, difficulty)
-        -- TODO: your script goes here (Nightmare Portal)
+        local randomId = NightmareDungeonIds[math.random(1, #NightmareDungeonIds)]
+        FireRaidIfNeeded(randomId, difficulty)
     end
 
     -- ========================================================
@@ -351,7 +391,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             local tier = args[1]
             return tier ~= nil and DungeonWithClassHandlers[tier] ~= nil
         elseif objType == "DoDungeonWithWorldAndDifficulty" then
-            return questData.LinkedWorld ~= nil and DungeonWorldDifficultyHandlers[questData.LinkedWorld] ~= nil
+            return questData.LinkedWorld ~= nil and DungeonWorldRaid[questData.LinkedWorld] ~= nil
         elseif objType == "DoRandomDungeonWithDifficulty" then
             return true
         end
@@ -418,9 +458,8 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             return false
 
         elseif objType == "DoDungeonWithWorldAndDifficulty" then
-            local handler = questData.LinkedWorld and DungeonWorldDifficultyHandlers[questData.LinkedWorld]
-            if handler then
-                return true, pcall(handler, questData, amount, args[1])
+            if questData.LinkedWorld and DungeonWorldRaid[questData.LinkedWorld] then
+                return true, pcall(DungeonWorldWithDifficultyHandler, questData, amount, args[1])
             end
             return false
 
@@ -434,9 +473,15 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     -- Called once a quest is finished — turn off whatever your
     -- handler turned on here (e.g. your mob farm toggle)
     local function StopCurrentAction(questId, questData)
-        -- TODO (optional, only needed if you want to stop something
-        -- between quests)
-
+        if questData.Objective[1] == "DoDungeonWithClass" then
+            -- Head back to World 3 hub, then restore whatever class you
+            -- were playing before this quest switched it
+            rs.Teleport_TeleportToHub:FireServer(20) -- World 3 hub
+            if classBeforeSwitch then
+                rs.Profile_SwitchClass:FireServer(classBeforeSwitch)
+                classBeforeSwitch = nil
+            end
+        end
     end
 
     -- Grabs the first quest in the list that isn't finished yet AND has a
@@ -631,7 +676,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     -- then Daily and Weekly for running them individually.
     -- ========================================================
     QuestsMainTab:AddToggle('autoBothQuests', {
-        Text = 'Auto Complete Daily, then Weekly',
+        Text = 'Complete All',
         Tooltip = 'Works through your Daily quests first, then automatically moves on to Weekly once Daily is done',
         Default = false,
         Callback = function(value)
@@ -649,7 +694,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     QuestsMainTab:AddDivider()
 
     QuestsMainTab:AddToggle('autoDailyQuests', {
-        Text = 'Auto Complete Daily Quests',
+        Text = 'Complete Daily',
         Default = false,
         Callback = function(value)
             if value then
@@ -664,7 +709,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     })
 
     QuestsMainTab:AddToggle('autoWeeklyQuests', {
-        Text = 'Auto Complete Weekly Quests',
+        Text = 'Complete Weekly',
         Default = false,
         Callback = function(value)
             if value then
