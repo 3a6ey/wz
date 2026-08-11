@@ -186,14 +186,29 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         [51] = '93889085342251',
     }
 
-    -- Fires StartRaid(raidId, difficulty), but ONLY if you're not
-    -- already sitting on that dungeon's Place. This is what makes
-    -- re-toggling / script restarts safe - no duplicate teleports.
+    -- Fires StartRaid(raidId, difficulty), but ONLY if you're not already
+    -- sitting in that exact mission. Two checks, either one is enough:
+    --   1) workspace:GetAttribute("MissionId") == raidId - the server sets
+    --      this the moment a mission starts, and it reflects the mission
+    --      SLOT id (so this works for Nightmare Portal dungeons too, even
+    --      though their underlying dungeon rotates and has no fixed PlaceId)
+    --   2) game.PlaceId matches this raid's known static PlaceId (for
+    --      regular dungeons where we know the PlaceId ahead of time)
+    -- This is what makes re-toggling / script restarts safe - no duplicate
+    -- teleports, no getting stuck re-firing the same raid every restart.
     local function FireRaidIfNeeded(raidId, difficulty)
+        local ok, currentMissionId = pcall(function()
+            return workspace:GetAttribute("MissionId")
+        end)
+        if ok and currentMissionId ~= nil and tostring(currentMissionId) == tostring(raidId) then
+            return -- already in this exact mission
+        end
+
         local targetPlaceId = DungeonPlaceIds[raidId]
         if targetPlaceId and tostring(game.PlaceId) == tostring(targetPlaceId) then
             return -- already on this dungeon's place, do nothing
         end
+
         StartRaid(raidId, difficulty)
     end
 
@@ -313,11 +328,42 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     -- current class, switch to a class of the right tier, clear a dungeon,
     -- then switch back once the quest is done (see StopCurrentAction below).
     -- Fill in more tiers as you figure out which class belongs to each.
+    --
+    -- IMPORTANT: entering a dungeon fully restarts this script (it's a real
+    -- place teleport), so a plain local variable can't survive long enough
+    -- to remember your original class by the time the quest finishes and
+    -- we need to switch back. getgenv() persists across that restart (your
+    -- main script already relies on this elsewhere), so we store state
+    -- there instead.
     local TierToClass = {
         [2] = "IcefireMage",
         [4] = "Archer",
     }
-    local classBeforeSwitch = nil -- remembered so we can switch back after
+
+    getgenv().QuestsPersist = getgenv().QuestsPersist or {}
+    local Persist = getgenv().QuestsPersist
+
+    -- Only teleports to World 3's hub if we can't already tell we're
+    -- there. workspace's MissionId attribute is set whenever you're
+    -- actually inside a dungeon/mission place - if it's set, we're
+    -- definitely not in the hub yet, so the teleport is safe to fire.
+    -- If it's NOT set, we might already be sitting in the hub, so we
+    -- only fire once per attempt (persisted flag) instead of repeatedly
+    -- re-teleporting into the place we're already standing in.
+    local function TeleportToWorld3HubIfNeeded()
+        local ok, currentMissionId = pcall(function()
+            return workspace:GetAttribute("MissionId")
+        end)
+        if ok and currentMissionId ~= nil then
+            rs.Teleport_TeleportToHub:FireServer(20)
+            Persist.sentWorld3Hub = true
+            return
+        end
+        if not Persist.sentWorld3Hub then
+            rs.Teleport_TeleportToHub:FireServer(20)
+            Persist.sentWorld3Hub = true
+        end
+    end
 
     local function DungeonWithClassHandler(questData, amount, tier)
         local className = TierToClass[tier]
@@ -325,10 +371,13 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             warn('[Quests] No class mapped for tier ' .. tostring(tier))
             return
         end
-        local profile = Profile:GetProfile(plr)
-        classBeforeSwitch = profile and profile.Class and profile.Class.Value
 
-        rs.Teleport_TeleportToHub:FireServer(20) -- World 3 hub
+        if not Persist.classBeforeSwitch then
+            local profile = Profile:GetProfile(plr)
+            Persist.classBeforeSwitch = profile and profile.Class and profile.Class.Value
+        end
+
+        TeleportToWorld3HubIfNeeded()
         rs.Profile_SwitchClass:FireServer(className)
         FireRaidIfNeeded(15, 1) -- World 3's dungeon - any dungeon counts for this quest type
     end
