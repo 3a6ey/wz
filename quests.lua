@@ -419,9 +419,9 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     end
 
     -- DoDungeonWithClass -> Objective args = {classTier}. Need to be playing
-    -- a class of that tier when clearing ANY dungeon - so: remember your
-    -- current class, switch to a class of the right tier, clear a dungeon,
-    -- then switch back once the quest is done (see StopCurrentAction below).
+    -- a class of that tier when clearing ANY dungeon - any dungeon counts,
+    -- so we just use World 1's (the simplest/fastest one) rather than
+    -- needing to be in any specific world first.
     -- Fill in more tiers as you figure out which class belongs to each.
     --
     -- IMPORTANT: entering a dungeon fully restarts this script (it's a real
@@ -438,28 +438,6 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     getgenv().QuestsPersist = getgenv().QuestsPersist or {}
     local Persist = getgenv().QuestsPersist
 
-    -- Only teleports to World 3's hub if we can't already tell we're
-    -- there. workspace's MissionId attribute is set whenever you're
-    -- actually inside a dungeon/mission place - if it's set, we're
-    -- definitely not in the hub yet, so the teleport is safe to fire.
-    -- If it's NOT set, we might already be sitting in the hub, so we
-    -- only fire once per attempt (persisted flag) instead of repeatedly
-    -- re-teleporting into the place we're already standing in.
-    local function TeleportToWorld3HubIfNeeded()
-        local ok, currentMissionId = pcall(function()
-            return workspace:GetAttribute("MissionId")
-        end)
-        if ok and currentMissionId ~= nil then
-            rs.Teleport_TeleportToHub:FireServer(20)
-            Persist.sentWorld3Hub = true
-            return
-        end
-        if not Persist.sentWorld3Hub then
-            rs.Teleport_TeleportToHub:FireServer(20)
-            Persist.sentWorld3Hub = true
-        end
-    end
-
     local function DungeonWithClassHandler(questData, amount, tier)
         local className = TierToClass[tier]
         if not className then
@@ -472,9 +450,8 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             Persist.classBeforeSwitch = profile and profile.Class and profile.Class.Value
         end
 
-        TeleportToWorld3HubIfNeeded()
         rs.Profile_SwitchClass:FireServer(className)
-        FireRaidIfNeeded(15, 1) -- World 3's dungeon - any dungeon counts for this quest type
+        FireRaidIfNeeded(1, 5) -- World 1's dungeon - simplest, any dungeon counts for this quest type
     end
 
     local DungeonWithClassHandlers = {}
@@ -618,16 +595,15 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     -- handler turned on here (e.g. your mob farm toggle)
     local function StopCurrentAction(questId, questData)
         if questData.Objective[1] == "DoDungeonWithClass" then
-            -- Head back to World 3 hub, then restore whatever class you
-            -- were playing before this quest switched it. Both are
-            -- read/reset through Persist (getgenv()) since this can run
-            -- in a freshly-restarted script after the dungeon teleport.
-            TeleportToWorld3HubIfNeeded()
+            -- Restore whatever class you were playing before this quest
+            -- switched it. Read through Persist (getgenv()) since this can
+            -- run in a freshly-restarted script after the dungeon teleport.
+            -- No hub teleport needed - leaving the dungeon already returns
+            -- you to a hub on its own.
             if Persist.classBeforeSwitch then
                 rs.Profile_SwitchClass:FireServer(Persist.classBeforeSwitch)
                 Persist.classBeforeSwitch = nil
             end
-            Persist.sentWorld3Hub = nil -- reset so the next Tier-class quest can fire its own hub teleport
         elseif questData.Objective[1] == "CustomEvent" and questData.Objective[3] and questData.Objective[3][1] == "UpgradeCompleted" then
             -- Stop the upgrade loop and put your original gear back on
             UpgradeState.running = false
@@ -681,7 +657,13 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     local CurrentQuestId = nil
     local CheckInterval = 2
     local lastSkippedKey = nil
-    local firedQuestIds = {} -- hard guarantee: each questId's handler fires AT MOST once per run
+    -- Persisted via getgenv() so this survives a dungeon-forced script
+    -- restart - otherwise a quest whose handler already fired (e.g. it
+    -- already switched class and entered a dungeon) would look "not
+    -- fired yet" again after the restart and re-run its whole start
+    -- sequence while you're still mid-dungeon.
+    Persist.firedQuestIds = Persist.firedQuestIds or {}
+    local firedQuestIds = Persist.firedQuestIds
     local currentRunningMode = nil -- 'Daily' | 'Weekly' | 'Both' | nil
 
     -- Picks the next quest to work on. In 'Both' mode, BOTH pools get
