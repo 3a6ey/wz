@@ -77,6 +77,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             return MarketplaceService:UserOwnsGamePassAsync(plr.UserId, VIP_GAMEPASS_ID)
         end)
         HasVIP = ok and owns or false
+        warn('[Quests] VIP gamepass check: owns=' .. tostring(HasVIP) .. (ok and '' or ' (check FAILED, defaulting to false)'))
     end
 
     -- Fetches the full Weekly quest payload once. IMPORTANT: Weekly quests
@@ -99,7 +100,9 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         local ids = {}
         if weeklyData and weeklyData.quests then
             for _, q in ipairs(weeklyData.quests) do
-                if not (q.isVIP and not HasVIP) then
+                if q.isVIP and not HasVIP then
+                    -- filtered out, VIP-gated and you don't own it
+                else
                     table.insert(ids, q.id)
                 end
             end
@@ -136,6 +139,12 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             local entry = GetWeeklyQuestEntry(weeklyData, questId)
             if not entry then
                 return nil, nil, nil -- unknown this tick, don't guess
+            end
+            if entry.isVIP and not HasVIP then
+                -- defense in depth: even if this id somehow made it past
+                -- GetActiveWeeklyQuestIds' filtering, never treat a
+                -- VIP-gated quest as workable/claimable without VIP
+                return nil, nil, nil
             end
             current = entry.value or 0
             claimed = entry.claimed or false
@@ -650,20 +659,34 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             if not claimedQuestIds[questId] then
                 local questData = GetQuestData(questId)
                 if questData and not questData.Disabled then
-                    local current, isDone, claimed = GetQuestStatus(questId, questData, isWeekly, weeklyData)
-                    if current == nil then
-                        -- status unknown this tick (e.g. weekly data fetch failed) -
-                        -- don't guess, just skip it for this pass
-                    elseif isDone then
-                        if not claimed then
-                            ClaimQuest(questId, isWeekly, questData.Name)
+                    -- check VIP-gating explicitly here so it shows up as a
+                    -- clear, named skip reason instead of silently vanishing
+                    local vipBlocked = false
+                    if isWeekly then
+                        local entry = GetWeeklyQuestEntry(weeklyData, questId)
+                        if entry and entry.isVIP and not HasVIP then
+                            vipBlocked = true
                         end
+                    end
+
+                    if vipBlocked then
+                        table.insert(skippedNames, (questData.Name or tostring(questId)) .. ' (VIP required)')
                     else
-                        local objective = questData.Objective
-                        if CanHandle(questData, objective) then
-                            return questId, questData, current
+                        local current, isDone, claimed = GetQuestStatus(questId, questData, isWeekly, weeklyData)
+                        if current == nil then
+                            -- status unknown this tick (e.g. weekly data fetch failed) -
+                            -- don't guess, just skip it for this pass
+                        elseif isDone then
+                            if not claimed then
+                                ClaimQuest(questId, isWeekly, questData.Name)
+                            end
                         else
-                            table.insert(skippedNames, questData.Name or tostring(questId))
+                            local objective = questData.Objective
+                            if CanHandle(questData, objective) then
+                                return questId, questData, current
+                            else
+                                table.insert(skippedNames, questData.Name or tostring(questId))
+                            end
                         end
                     end
                 end
