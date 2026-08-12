@@ -20,6 +20,7 @@ local plr, rs, Window, Tabs, Toggles, noti = ...
 
 local Quests = require(game.ReplicatedStorage.Shared.Quests)
 local Profile = require(game.ReplicatedStorage.Shared.Profile)
+local Items = require(game.ReplicatedStorage.Shared.Items)
 
 Tabs.Quests = Window:AddTab('Quests', 'scroll-text')
 local QuestsTabbox = Tabs.Quests:AddLeftTabbox('questsBox')
@@ -303,11 +304,105 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         end
     end
 
+    -- ========================================================
+    -- "Upgrade items 10 times" quest support
+    -- --------------------------------------------------------
+    -- Same folder paths your main script already uses for equips
+    -- (ReplicatedStorage.PlayerEquips[you].Primary/Offhand/Armor) and the
+    -- exact same upgrade-loop logic you gave me for "Upgrade Equipped
+    -- Items" - just pointed at whatever random equippable item we found
+    -- in your inventory instead of always the currently-equipped one.
+    -- No place teleport happens for this quest, so a plain local table
+    -- is fine here (doesn't need getgenv() persistence).
+    -- ========================================================
+    local PlayerEquips = game.ReplicatedStorage:WaitForChild('PlayerEquips'):WaitForChild(plr.Name)
+    local EquipPrimary = PlayerEquips:WaitForChild('Primary')
+    local EquipOffhand = PlayerEquips:WaitForChild('Offhand')
+    local EquipArmor = PlayerEquips:WaitForChild('Armor')
+
+    local UpgradeState = {
+        running = false,
+        savedPrimary = nil,
+        savedOffhand = nil,
+        savedArmor = nil,
+    }
+
+    -- Exact loop from your "Upgrade Equipped Items" button, just reused
+    -- on whatever item we hand it - upgrades until maxed, or until 2
+    -- seconds pass with no gold spent (means it's stuck/capped).
+    local function UpgradeItemToLimit(item)
+        if not (item and item:FindFirstChild('UpgradeLimit') and item.UpgradeLimit.Value ~= 0) then
+            return
+        end
+        local profile = Profile:GetProfile(plr)
+        local goldValue = profile.Currency.Gold
+        local oldGold = goldValue.Value
+        local timer = tick()
+        while task.wait(0.1) do
+            if item:FindFirstChild('Upgrade') and item.Upgrade.Value == item.UpgradeLimit.Value then
+                break
+            else
+                rs.ItemUpgrade_Upgrade:FireServer(item)
+                if goldValue.Value ~= oldGold then
+                    oldGold = goldValue.Value
+                    timer = tick()
+                end
+                if tick() - timer >= 2 then break end
+            end
+        end
+    end
+
+    -- Any weapon or armor in your inventory that still has upgrade room
+    -- left - doesn't have to be the best one, just any equippable item
+    local function FindUpgradeableItem()
+        local profile = Profile:GetProfile(plr)
+        local invItems = profile.Inventory.Items
+        for _, item in pairs(invItems:GetChildren()) do
+            local limit = item:FindFirstChild('UpgradeLimit')
+            if limit and limit.Value > 0 then
+                local cur = item:FindFirstChild('Upgrade')
+                local curVal = cur and cur.Value or 0
+                if curVal < limit.Value then
+                    local data = Items[item.Name]
+                    if data and (data.Type == 'Weapon' or data.Type == 'Armor') then
+                        return item, data.Type
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
     -- CustomEvent -> Objective args = {eventKey}. Keyed by that key.
     local CustomEventHandlers = {}
-    -- CustomEventHandlers["UpgradeCompleted"] = function(questData, amount)
-    --     -- TODO: your script goes here
-    -- end
+
+    CustomEventHandlers["UpgradeCompleted"] = function(questData, amount)
+        if UpgradeState.running then return end
+        UpgradeState.running = true
+
+        -- remember what's currently equipped so it can go back on after
+        UpgradeState.savedPrimary = EquipPrimary:GetChildren()[1]
+        UpgradeState.savedOffhand = EquipOffhand:GetChildren()[1]
+        UpgradeState.savedArmor = EquipArmor:GetChildren()[1]
+
+        task.spawn(function()
+            while UpgradeState.running do
+                local item, itemType = FindUpgradeableItem()
+                if not item then
+                    warn('[Quests] No upgradeable items left in inventory for the Upgrade quest')
+                    break
+                end
+
+                local targetFolder = (itemType == 'Weapon') and EquipPrimary or EquipArmor
+                rs.Inventory_EquipItem:FireServer(item, targetFolder)
+                task.wait(0.5) -- give the equip a moment to register
+
+                UpgradeItemToLimit(item)
+                task.wait(0.5)
+            end
+        end)
+    end
+
     CustomEventHandlers["CollectEquipmentInDungeon"] = function(questData, amount)
         FireRaidIfNeeded(2, 5)
     end
@@ -524,12 +619,21 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     local function StopCurrentAction(questId, questData)
         if questData.Objective[1] == "DoDungeonWithClass" then
             -- Head back to World 3 hub, then restore whatever class you
-            -- were playing before this quest switched it
-            rs.Teleport_TeleportToHub:FireServer(20) -- World 3 hub
-            if classBeforeSwitch then
-                rs.Profile_SwitchClass:FireServer(classBeforeSwitch)
-                classBeforeSwitch = nil
+            -- were playing before this quest switched it. Both are
+            -- read/reset through Persist (getgenv()) since this can run
+            -- in a freshly-restarted script after the dungeon teleport.
+            TeleportToWorld3HubIfNeeded()
+            if Persist.classBeforeSwitch then
+                rs.Profile_SwitchClass:FireServer(Persist.classBeforeSwitch)
+                Persist.classBeforeSwitch = nil
             end
+            Persist.sentWorld3Hub = nil -- reset so the next Tier-class quest can fire its own hub teleport
+        elseif questData.Objective[1] == "CustomEvent" and questData.Objective[3] and questData.Objective[3][1] == "UpgradeCompleted" then
+            -- Stop the upgrade loop and put your original gear back on
+            UpgradeState.running = false
+            if UpgradeState.savedPrimary then rs.Inventory_EquipItem:FireServer(UpgradeState.savedPrimary, EquipPrimary) end
+            if UpgradeState.savedOffhand then rs.Inventory_EquipItem:FireServer(UpgradeState.savedOffhand, EquipOffhand) end
+            if UpgradeState.savedArmor then rs.Inventory_EquipItem:FireServer(UpgradeState.savedArmor, EquipArmor) end
         end
     end
 
