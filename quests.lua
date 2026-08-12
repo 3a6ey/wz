@@ -59,6 +59,26 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         return ids
     end
 
+    -- ========================================================
+    -- VIP gamepass check (id 8136226, per roblox.com/game-pass/8136226/VIP)
+    -- --------------------------------------------------------
+    -- Weekly quests can be flagged isVIP=true in the payload from
+    -- Quests_GetWeeklyQuestData - if you don't own the VIP gamepass, we
+    -- skip those entirely instead of wasting time working on/claiming
+    -- something that's gated behind it. Checked once and cached, since
+    -- gamepass ownership doesn't change mid-session (short of buying it
+    -- right now, which is rare enough not to worry about re-checking).
+    -- ========================================================
+    local MarketplaceService = game:GetService("MarketplaceService")
+    local VIP_GAMEPASS_ID = 8136226
+    local HasVIP
+    do
+        local ok, owns = pcall(function()
+            return MarketplaceService:UserOwnsGamePassAsync(plr.UserId, VIP_GAMEPASS_ID)
+        end)
+        HasVIP = ok and owns or false
+    end
+
     -- Fetches the full Weekly quest payload once. IMPORTANT: Weekly quests
     -- do NOT use GetQuestProgress at all - the real game GUI reads
     -- progress/claimed straight off this payload's per-quest {id, value,
@@ -73,11 +93,15 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         return nil
     end
 
+    -- Skips VIP-flagged quests entirely if you don't own the gamepass -
+    -- they won't show up as pickable OR claimable for you.
     local function GetActiveWeeklyQuestIds(weeklyData)
         local ids = {}
         if weeklyData and weeklyData.quests then
             for _, q in ipairs(weeklyData.quests) do
-                table.insert(ids, q.id)
+                if not (q.isVIP and not HasVIP) then
+                    table.insert(ids, q.id)
+                end
             end
         end
         return ids
@@ -713,7 +737,10 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         local myToken = runToken
         Running = true
         currentRunningMode = mode
-        firedQuestIds = {}
+        -- NOT resetting firedQuestIds here anymore - it's persisted via
+        -- Persist (getgenv()) so it survives dungeon-forced restarts. If
+        -- we reset it every RunLoop start, that protection would be
+        -- pointless (a restart also re-triggers this function).
 
         while Running and myToken == runToken do
             local questId, questData, current, skippedNames, activeSubMode = PickQuest(mode)
