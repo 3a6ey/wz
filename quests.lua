@@ -256,8 +256,8 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     MobRaid["EarthCrab"] = {4, 5}
     MobRaid["ElectricCrab"] = {4, 5}
     MobRaid["FireCrab"] = {4, 5}
-    MobRaid["GrassCobra"] = {1, 5}
-    MobRaid["PoisonCobra"] = {1, 5}
+    MobRaid["GrassCobra"] = {3, 5} -- Scarecrow Defense (1-2), Challenge
+    MobRaid["PoisonCobra"] = {3, 5} -- Scarecrow Defense (1-2), Challenge
     MobRaid["Quillodile"] = {12, 1}
     MobRaid["GoblinSpear"] = {13, 1}
     MobRaid["GoblinSlingshot"] = {13, 1}
@@ -311,11 +311,38 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     }
 
     -- DoDungeon -> "defeat dungeon '<Name>' at any difficulty"
-    -- Objective args = {dungeonId}. Keyed by dungeon id -> difficulty.
+    -- Objective args = {dungeonId}. Keyed by dungeon id -> difficulty to
+    -- send with StartRaid. Challenge (5) picked as default since it's
+    -- generally faster/better rewards - change any of these to 1 (Normal)
+    -- if you'd rather play it safe on a specific one.
     local DungeonIdHandlers = {}
-    -- DungeonIdHandlers[11] = 5  -- Temple of Ruin (World 2)
-    -- DungeonIdHandlers[26] = 5  -- The Underworld (World 7)
-    -- DungeonIdHandlers[14] = 1  -- Mountain Pass (World 3)
+    DungeonIdHandlers[1] = 5   -- Crabby Crusade (1-1)
+    DungeonIdHandlers[3] = 5   -- Scarecrow Defense (1-2)
+    DungeonIdHandlers[2] = 5   -- Dire Problem (1-3)
+    DungeonIdHandlers[4] = 5   -- Kingslayer (1-4)
+    DungeonIdHandlers[6] = 5   -- Gravetower Dungeon (1-5)
+    DungeonIdHandlers[11] = 5  -- Temple of Ruin (2-1)
+    DungeonIdHandlers[12] = 5  -- Mama Trauma (2-2)
+    DungeonIdHandlers[13] = 5  -- Volcano's Shadow (2-3)
+    DungeonIdHandlers[7] = 5   -- Volcano Dungeon (2-4)
+    DungeonIdHandlers[14] = 5  -- Mountain Pass (3-1)
+    DungeonIdHandlers[15] = 5  -- Winter Cavern (3-2)
+    DungeonIdHandlers[16] = 5  -- Winter Dungeon (3-3)
+    DungeonIdHandlers[20] = 5  -- Scrap Canyon (4-1)
+    DungeonIdHandlers[19] = 5  -- Deserted Burrowmine (4-2)
+    DungeonIdHandlers[18] = 5  -- Pyramid Dungeon (4-3)
+    DungeonIdHandlers[24] = 5  -- Konoh Heartlands (5-1)
+    DungeonIdHandlers[35] = 5  -- Konoh Inferno (5-2)
+    DungeonIdHandlers[25] = 5  -- Rough Waters (6-1)
+    DungeonIdHandlers[36] = 5  -- Treasure Hunt (6-2)
+    DungeonIdHandlers[26] = 5  -- The Underworld (7-1)
+    DungeonIdHandlers[37] = 5  -- The Labyrinth (7-2)
+    DungeonIdHandlers[30] = 5  -- Rescue in the Ruins (8-1)
+    DungeonIdHandlers[31] = 5  -- Ruin Rush (8-2)
+    DungeonIdHandlers[32] = 5  -- Treetop Trouble (9-1)
+    DungeonIdHandlers[33] = 5  -- Aether Fortress (9-2)
+    DungeonIdHandlers[41] = 5  -- Crystal Chaos (10-1)
+    DungeonIdHandlers[42] = 5  -- Astral Academy (10-2)
 
     -- CompleteWorldEvent -> keyed by LinkedWorld (doing these later per your note)
     local WorldEventHandlers = {}
@@ -483,7 +510,26 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             Persist.classBeforeSwitch = profile and profile.Class and profile.Class.Value
         end
 
-        rs.Profile_SwitchClass:FireServer(className)
+        -- Staged flow, since teleporting to World 3 is a REAL place
+        -- teleport that fully restarts this script mid-function - code
+        -- after it in the SAME call would never run. Each stage is
+        -- gated by its own Persist(getgenv) flag so it only fires once,
+        -- and RunLoop calls this handler on every pass for this quest
+        -- type specifically (see the `alwaysReinvoke` check there) so
+        -- the NEXT script instance (after the restart) can pick up and
+        -- advance to the next stage.
+        if not Persist.tierClassHubSent then
+            Persist.tierClassHubSent = true
+            rs.Teleport_TeleportToHub:FireServer(20) -- World 3 hub
+            return -- script restarts here; next call continues below
+        end
+
+        if not Persist.tierClassSwitched then
+            Persist.tierClassSwitched = true
+            rs.Profile_SwitchClass:FireServer(className)
+            task.wait(1) -- give the switch a moment to register before entering a dungeon
+        end
+
         FireRaidIfNeeded(1, 5) -- World 1's dungeon - simplest, any dungeon counts for this quest type
     end
 
@@ -637,6 +683,10 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
                 rs.Profile_SwitchClass:FireServer(Persist.classBeforeSwitch)
                 Persist.classBeforeSwitch = nil
             end
+            -- reset the staged flow so the NEXT Tier-class quest (this
+            -- one again later, or a different tier) starts fresh
+            Persist.tierClassHubSent = nil
+            Persist.tierClassSwitched = nil
         elseif questData.Objective[1] == "CustomEvent" and questData.Objective[3] and questData.Objective[3][1] == "UpgradeCompleted" then
             -- Stop the upgrade loop and put your original gear back on
             UpgradeState.running = false
@@ -790,8 +840,15 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
                 CurrentQuestId = questId
                 local lastRemaining = amount - (current or 0)
 
-                if not firedQuestIds[questId] then
-                    -- Not fired yet this session - kick off the handler.
+                -- DoDungeonWithClass manages its own staged, restart-safe
+                -- firing internally (via Persist/getgenv flags per step),
+                -- so it needs to be called on every pass to advance to the
+                -- next stage after a script restart - it can't rely on the
+                -- one-shot firedQuestIds gate like other handlers do.
+                local alwaysReinvoke = (objective[1] == "DoDungeonWithClass")
+                local isFirstTime = not firedQuestIds[questId]
+
+                if alwaysReinvoke or isFirstTime then
                     -- Note: for raid quests, FireRaidIfNeeded ALSO checks
                     -- game.PlaceId itself, so even a fresh script restart
                     -- (after being teleported into the dungeon's own Place)
@@ -803,7 +860,9 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
                     if not ok and handled then
                         warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
                     end
-                    noti((questData.Name or tostring(questId)) .. ' — ' .. tostring(lastRemaining) .. ' left')
+                    if isFirstTime then
+                        noti((questData.Name or tostring(questId)) .. ' — ' .. tostring(lastRemaining) .. ' left')
+                    end
                 end
 
                 while Running and myToken == runToken do
