@@ -118,6 +118,16 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         return nil
     end
 
+    -- Persisted via getgenv() so state (like per-quest "already fired"
+    -- flags, or a class you switched away from) survives a script
+    -- restart. Entering a dungeon is a REAL Roblox place teleport, which
+    -- fully destroys and reloads this whole script - a plain local
+    -- variable can't survive that, but getgenv() can (your main script
+    -- already relies on this elsewhere). Declared early so every
+    -- function below can use it.
+    getgenv().QuestsPersist = getgenv().QuestsPersist or {}
+    local Persist = getgenv().QuestsPersist
+
     -- Tracks which questIds we've already claimed this session (whether we
     -- claimed them ourselves or they were already claimed by the time we
     -- checked - e.g. you claimed it manually in the UI). Once a quest is
@@ -167,6 +177,15 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     local function ClaimQuest(questId, isWeekly, questName)
         if claimedQuestIds[questId] then return end
         claimedQuestIds[questId] = true
+
+        -- Also clear the "already fired" marker for this id now that
+        -- it's done - quest ids get recycled from a shared pool, so if
+        -- we left this marked forever, a LATER unrelated quest that
+        -- happens to reuse the same numeric id would silently never
+        -- have its handler run (it would look "already fired").
+        if Persist.firedQuestIds then
+            Persist.firedQuestIds[questId] = nil
+        end
 
         rs.Quests_ClaimQuest:FireServer(questId)
         noti((questName or tostring(questId)) .. ' — claimed!')
@@ -467,9 +486,12 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         FireRaidIfNeeded(2, 5)
     end
     CustomEventHandlers["HatchPetEgg"] = function(questData, amount)
-        for i = 1, amount do
-            rs.Pets_BuyEgg:FireServer("StarEgg", "Gold")
-        end
+        task.spawn(function()
+            for i = 1, amount do
+                rs.Pets_BuyEgg:FireServer("StarEgg", "Gold")
+                task.wait(0.3) -- small gap between buys so the server has time to process each one
+            end
+        end)
     end
     -- CustomEventHandlers["DuelCompleted"] = function(questData, amount)
     --     -- TODO: your script goes here
@@ -494,9 +516,6 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         [2] = "IcefireMage",
         [4] = "Archer",
     }
-
-    getgenv().QuestsPersist = getgenv().QuestsPersist or {}
-    local Persist = getgenv().QuestsPersist
 
     local function DungeonWithClassHandler(questData, amount, tier)
         local className = TierToClass[tier]
