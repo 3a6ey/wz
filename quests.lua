@@ -2,7 +2,12 @@
 -- QUESTS MODULE
 -- ============================================================
 -- Load this separately from your main script, e.g.:
---   loadstring(game:HttpGet('YOUR_RAW_URL_HERE'))(plr, rs, Window, Tabs, Toggles, noti)
+--   loadstring(game:HttpGet('YOUR_RAW_URL_HERE'))(plr, rs, Window, Tabs, Toggles, noti, Library)
+--
+-- Needs `Library` now too (in addition to the usual args) so it can
+-- create a single persistent, live-updating notification via
+-- Library:Notify({..., Persist = true}) instead of a stream of toast
+-- popups - see the "PERSISTENT STATUS NOTIFICATION" section below.
 --
 -- It's loaded as its own chunk so it doesn't add to your main
 -- script's local variable count (avoids "Out of local registers").
@@ -16,7 +21,7 @@
 -- are for.
 -- ============================================================
 
-local plr, rs, Window, Tabs, Toggles, noti = ...
+local plr, rs, Window, Tabs, Toggles, noti, Library = ...
 
 local Quests = require(game.ReplicatedStorage.Shared.Quests)
 local Profile = require(game.ReplicatedStorage.Shared.Profile)
