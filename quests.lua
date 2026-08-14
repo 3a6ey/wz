@@ -773,6 +773,18 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     local CurrentQuestId = nil
     local CheckInterval = 2
     local lastSkippedKey = nil
+    local StatusText = 'Idle'
+    local statusLabel = nil -- set once the tab UI is built, see bottom of file
+
+    -- Updates both the tracked status text and the persistent GUI label
+    -- (if it exists yet) - this is the "1 notification that stays and
+    -- updates live" instead of a stream of toast popups.
+    local function SetStatus(text)
+        StatusText = text
+        if statusLabel and statusLabel.SetText then
+            pcall(function() statusLabel:SetText(text) end)
+        end
+    end
     -- Persisted via getgenv() so this survives a dungeon-forced script
     -- restart - otherwise a quest whose handler already fired (e.g. it
     -- already switched class and entered a dungeon) would look "not
@@ -840,11 +852,13 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             if not questId then
                 if skippedNames and #skippedNames > 0 then
                     local key = table.concat(skippedNames, ', ')
+                    SetStatus('Waiting on: ' .. key)
                     if key ~= lastSkippedKey then
                         warn('[Quests] No handler yet for: ' .. key)
                         lastSkippedKey = key
                     end
                 else
+                    SetStatus(mode .. ' Quests: all done!')
                     if lastSkippedKey ~= 'DONE_' .. mode then
                         noti(mode .. ' Quests: all done!')
                         lastSkippedKey = 'DONE_' .. mode
@@ -858,6 +872,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
 
                 CurrentQuestId = questId
                 local lastRemaining = amount - (current or 0)
+                SetStatus((questData.Name or tostring(questId)) .. ' — ' .. tostring(lastRemaining) .. ' left')
 
                 -- DoDungeonWithClass manages its own staged, restart-safe
                 -- firing internally (via Persist/getgenv flags per step),
@@ -878,9 +893,6 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
                     local handled, ok, err = RunHandlerFor(questData, objective, amount)
                     if not ok and handled then
                         warn('[Quests] Error running handler for "' .. tostring(questData.Name) .. '": ' .. tostring(err))
-                    end
-                    if isFirstTime then
-                        noti((questData.Name or tostring(questId)) .. ' — ' .. tostring(lastRemaining) .. ' left')
                     end
                 end
 
@@ -907,7 +919,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
                         local remaining = amount - newCurrent
                         if remaining ~= lastRemaining then
                             lastRemaining = remaining
-                            noti((questData.Name or tostring(questId)) .. ' — ' .. tostring(remaining) .. ' left')
+                            SetStatus((questData.Name or tostring(questId)) .. ' — ' .. tostring(remaining) .. ' left')
                         end
                         task.wait(CheckInterval)
                     end
@@ -918,6 +930,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         if myToken == runToken then
             Running = false
             currentRunningMode = nil
+            SetStatus('Idle')
         end
     end
 
@@ -932,6 +945,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             end
         end
         CurrentQuestId = nil
+        SetStatus('Idle')
     end
 
     -- ========================================================
@@ -985,4 +999,10 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             end
         end,
     })
+
+    QuestsMainTab:AddDivider()
+
+    -- Single persistent status display - stays put and updates its text
+    -- live as progress changes, instead of a stream of toast popups.
+    statusLabel = QuestsMainTab:AddLabel(StatusText)
 end)()
