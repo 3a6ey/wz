@@ -139,6 +139,42 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     -- in here we never touch or notify about it again this session.
     local claimedQuestIds = {}
 
+    -- ========================================================
+    -- Daily Login rewards (the LEFT-side tier track on the Daily tab,
+    -- separate from the quest rewards on the right).
+    -- --------------------------------------------------------
+    -- The real game UI claims these through the Profile module itself,
+    -- not a raw remote call directly - GetCurrentDailyLogin returns
+    -- (currentStreak, claimedUpTo), and AwardDailyLoginReward(plr)
+    -- claims whatever's newly available. The same call works for every
+    -- tier - the server figures out which one(s) based on those two
+    -- numbers, so we just loop it while there's a gap to close.
+    -- ========================================================
+    local function TryClaimDailyLogin()
+        for _ = 1, 5 do -- at most 5 tiers exist, so this can never loop forever
+            local ok, current, claimedUpTo = pcall(function()
+                return Profile:GetCurrentDailyLogin(plr)
+            end)
+            if not ok then
+                warn('[Quests] Failed to check Daily Login status: ' .. tostring(current))
+                return
+            end
+            if not (current and claimedUpTo and claimedUpTo < current) then
+                break -- nothing left to claim
+            end
+            local ok2, err2 = pcall(function()
+                Profile:AwardDailyLoginReward(plr)
+            end)
+            if ok2 then
+                noti('Daily login reward claimed!')
+            else
+                warn('[Quests] Failed to claim Daily Login reward: ' .. tostring(err2))
+                break
+            end
+            task.wait(0.5)
+        end
+    end
+
     -- Unified status check for both Daily and Weekly quests.
     -- Returns: current progress, whether it's reached the target amount,
     -- and whether the reward's already been claimed.
@@ -779,17 +815,46 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     local CheckInterval = 2
     local lastSkippedKey = nil
     local StatusText = 'Idle'
-    local statusLabel = nil -- set once the tab UI is built, see bottom of file
 
-    -- Updates both the tracked status text and the persistent GUI label
-    -- (if it exists yet) - this is the "1 notification that stays and
-    -- updates live" instead of a stream of toast popups.
-    local function SetStatus(text)
-        StatusText = text
-        if statusLabel and statusLabel.SetText then
-            pcall(function() statusLabel:SetText(text) end)
+    -- ========================================================
+    -- PERSISTENT STATUS NOTIFICATION
+    -- --------------------------------------------------------
+    -- One single notification (Persist = true) that stays on screen
+    -- and updates its text live via :ChangeDescription() as progress
+    -- changes - instead of a stream of separate toast popups that each
+    -- fade away on their own. Recreated fresh each time a mode toggle
+    -- starts (since the whole GUI - including any open notification -
+    -- gets rebuilt from scratch if the script restarts from a dungeon
+    -- teleport), and destroyed when quests are stopped.
+    -- ========================================================
+    local statusNotification = nil
+
+    local function DestroyStatusNotification()
+        if statusNotification then
+            pcall(function() statusNotification:Destroy() end)
+            statusNotification = nil
         end
     end
+
+    local function SetStatus(text)
+        StatusText = text
+        if statusNotification then
+            local ok = pcall(function() statusNotification:ChangeDescription(text) end)
+            if ok then return end
+            statusNotification = nil -- stale reference, fall through and recreate
+        end
+        local ok, result = pcall(function()
+            return Library:Notify({
+                Title = 'Quests',
+                Description = text,
+                Persist = true,
+            })
+        end)
+        if ok then
+            statusNotification = result
+        end
+    end
+
     -- Persisted via getgenv() so this survives a dungeon-forced script
     -- restart - otherwise a quest whose handler already fired (e.g. it
     -- already switched class and entered a dungeon) would look "not
@@ -935,7 +1000,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         if myToken == runToken then
             Running = false
             currentRunningMode = nil
-            SetStatus('Idle')
+            DestroyStatusNotification()
         end
     end
 
@@ -950,13 +1015,23 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             end
         end
         CurrentQuestId = nil
-        SetStatus('Idle')
+        DestroyStatusNotification()
     end
 
     -- ========================================================
     -- Quests Tab — Both first (recommended default), then a divider,
     -- then Daily and Weekly for running them individually.
     -- ========================================================
+
+    -- Check/claim Daily Login rewards passively in the background,
+    -- regardless of which quest toggle (if any) is on.
+    task.spawn(function()
+        while true do
+            pcall(TryClaimDailyLogin)
+            task.wait(60)
+        end
+    end)
+
     QuestsMainTab:AddToggle('autoBothQuests', {
         Text = 'Complete All',
         Tooltip = 'Works through your Daily quests first, then automatically moves on to Weekly once Daily is done',
@@ -1004,10 +1079,4 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             end
         end,
     })
-
-    QuestsMainTab:AddDivider()
-
-    -- Single persistent status display - stays put and updates its text
-    -- live as progress changes, instead of a stream of toast popups.
-    statusLabel = QuestsMainTab:AddLabel(StatusText)
 end)()
