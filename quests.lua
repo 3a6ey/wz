@@ -843,6 +843,10 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             if ok then return end
             statusNotification = nil -- stale reference, fall through and recreate
         end
+        if not Library then
+            warn('[Quests] Library was not passed to this module - persistent notification cannot be created. Update your loadstring call to pass Library as the 7th argument.')
+            return
+        end
         local ok, result = pcall(function()
             return Library:Notify({
                 Title = 'Quests',
@@ -852,6 +856,8 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         end)
         if ok then
             statusNotification = result
+        else
+            warn('[Quests] Library:Notify failed: ' .. tostring(result))
         end
     end
 
@@ -974,6 +980,41 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
                     -- bail out cleanly if we were stopped during the wait below,
                     -- without firing any "quest complete" side effects
                     if not Running or myToken ~= runToken then break end
+
+                    -- Opportunistically claim any OTHER already-finished quest
+                    -- in the pool while we're busy working on this one, so
+                    -- nothing sits around unclaimed for a long time (e.g. a
+                    -- whole dungeon clear) just because the bot is focused
+                    -- elsewhere. This is what makes "Complete Daily" claim
+                    -- fast even mid-dungeon, instead of only sweeping once
+                    -- at the very start of the outer loop.
+                    if mode == 'Daily' or mode == 'Both' then
+                        for _, otherId in ipairs(GetActiveDailyQuestIds()) do
+                            if otherId ~= questId and not claimedQuestIds[otherId] then
+                                local od = GetQuestData(otherId)
+                                if od and not od.Disabled then
+                                    local _, oDone, oClaimed = GetQuestStatus(otherId, od, false, nil)
+                                    if oDone and not oClaimed then
+                                        ClaimQuest(otherId, false, od.Name)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    if mode == 'Weekly' or mode == 'Both' then
+                        local wData = isWeekly and weeklyData or GetWeeklyData()
+                        for _, otherId in ipairs(GetActiveWeeklyQuestIds(wData)) do
+                            if otherId ~= questId and not claimedQuestIds[otherId] then
+                                local od = GetQuestData(otherId)
+                                if od and not od.Disabled then
+                                    local _, oDone, oClaimed = GetQuestStatus(otherId, od, true, wData)
+                                    if oDone and not oClaimed then
+                                        ClaimQuest(otherId, true, od.Name)
+                                    end
+                                end
+                            end
+                        end
+                    end
 
                     if newCurrent == nil then
                         -- status unknown this tick (e.g. weekly fetch failed) -
