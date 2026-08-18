@@ -570,18 +570,20 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
             Persist.classBeforeSwitch = profile and profile.Class and profile.Class.Value
         end
 
-        -- Staged flow, since teleporting to World 3 is a REAL place
-        -- teleport that fully restarts this script mid-function - code
-        -- after it in the SAME call would never run. Each stage is
-        -- gated by its own Persist(getgenv) flag so it only fires once,
-        -- and RunLoop calls this handler on every pass for this quest
-        -- type specifically (see the `alwaysReinvoke` check there) so
-        -- the NEXT script instance (after the restart) can pick up and
-        -- advance to the next stage.
+        -- Each step is gated by its own Persist(getgenv) flag so it only
+        -- fires once - this matters if entering the dungeon later on
+        -- restarts the script (real Roblox place teleport, confirmed).
+        -- BUT we do NOT rely on the hub-teleport itself restarting the
+        -- script (turns out it may not - it can just be an in-place
+        -- move), so we DON'T return/stop after firing it - we just wait
+        -- a moment and keep going in the SAME call. If a restart DOES
+        -- happen mid-wait, RunLoop re-invokes this handler afterward
+        -- (see `alwaysReinvoke`) and the flags let it pick up cleanly
+        -- from wherever it left off either way.
         if not Persist.tierClassHubSent then
             Persist.tierClassHubSent = true
             rs.Teleport_TeleportToHub:FireServer(20) -- World 3 hub
-            return -- script restarts here; next call continues below
+            task.wait(2) -- give it a moment to actually move you there
         end
 
         if not Persist.tierClassSwitched then
@@ -849,9 +851,11 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         end
         local ok, result = pcall(function()
             return Library:Notify({
-                Title = 'Quests',
+                Title = 'Current Quest',
                 Description = text,
                 Persist = true,
+                Position = UDim2.new(1, -20, 1, -160), -- a bit lower & left of the default corner spot
+                Size = UDim2.new(0, 320, 0, 90), -- bigger so it's easier to read at a glance
             })
         end)
         if ok then
