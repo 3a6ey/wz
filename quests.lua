@@ -31,6 +31,25 @@ Tabs.Quests = Window:AddTab('Quests', 'scroll-text')
 local QuestsTabbox = Tabs.Quests:AddLeftTabbox('questsBox')
 local QuestsMainTab = QuestsTabbox:AddTab('Quests')
 
+-- Diagnostic: fires the moment this module loads, independent of any
+-- toggle/quest logic, so you can check the console (F9) right away in
+-- ANY place (hub or dungeon) to see whether Library:Notify itself works
+-- there yet, without waiting for RunLoop/PickQuest to get around to it.
+do
+    if not Library then
+        warn('[Quests] MODULE LOADED but Library was NOT passed in - update your loadstring call to include it as the 7th argument.')
+    else
+        local ok, err = pcall(function()
+            Library:Notify({ Title = 'Quests', Description = 'Quests module loaded', Persist = false })
+        end)
+        if ok then
+            warn('[Quests] MODULE LOADED, Library:Notify works.')
+        else
+            warn('[Quests] MODULE LOADED but Library:Notify FAILED: ' .. tostring(err))
+        end
+    end
+end
+
 -- Quests Tab
 ;(function()
     local function GetMyProfile()
@@ -925,6 +944,13 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         -- Persist (getgenv()) so it survives dungeon-forced restarts. If
         -- we reset it every RunLoop start, that protection would be
         -- pointless (a restart also re-triggers this function).
+
+        -- Show SOMETHING immediately, before PickQuest even runs (which
+        -- involves network calls and can take a moment, especially right
+        -- after the whole script/GUI reloads from a dungeon teleport) -
+        -- so there's instant visible feedback that the bot is alive
+        -- instead of nothing showing for a few seconds.
+        SetStatus('Starting ' .. mode .. ' quests...')
 
         while Running and myToken == runToken do
             local questId, questData, current, skippedNames, activeSubMode = PickQuest(mode)
