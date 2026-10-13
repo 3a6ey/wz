@@ -1,10 +1,8 @@
 -- ============================================================
--- QUESTS MODULE
+-- QUESTS MODULE (FIXED)
 -- ============================================================
--- Load this separately from your main script, e.g.:
---   loadstring(game:HttpGet('YOUR_RAW_URL_HERE'))(plr, rs, Window, Tabs, Toggles, noti, Library)
---
--- Needs `Library` now too (in addition to the usual args) so it can
+-- Load this separately from main script, e.g.:
+
 -- create a single persistent, live-updating notification via
 -- Library:Notify({..., Persist = true}) instead of a stream of toast
 -- popups - see the "PERSISTENT STATUS NOTIFICATION" section below.
@@ -23,18 +21,22 @@
 
 local plr, rs, Window, Tabs, Toggles, noti, Library = ...
 
+-- FIXED: Get actual shared modules and remotes from the correct paths
 local Quests = require(game.ReplicatedStorage.Shared.Quests)
 local Profile = require(game.ReplicatedStorage.Shared.Profile)
 local Items = require(game.ReplicatedStorage.Shared.Items)
+local Remotes = game:GetService("ReplicatedStorage"):WaitForChild('Remotes')
+
+-- Helper to safely get remotes (fallback for compatibility)
+local function getRemote(name)
+    return Remotes:FindFirstChild(name) or game.ReplicatedStorage:FindFirstChild(name)
+end
 
 Tabs.Quests = Window:AddTab('Quests', 'scroll-text')
 local QuestsTabbox = Tabs.Quests:AddLeftTabbox('questsBox')
 local QuestsMainTab = QuestsTabbox:AddTab('Quests')
 
--- Diagnostic: fires the moment this module loads, independent of any
--- toggle/quest logic, so you can check the console (F9) right away in
--- ANY place (hub or dungeon) to see whether Library:Notify itself works
--- there yet, without waiting for RunLoop/PickQuest to get around to it.
+-- Diagnostic: fires the moment this module loads
 do
     if not Library then
         warn('[Quests] MODULE LOADED but Library was NOT passed in - update your loadstring call to include it as the 7th argument.')
@@ -60,22 +62,19 @@ end
         return Quests:GetQuestDataFromID(questId)
     end
 
-    -- IMPORTANT: the 2nd return value here is NOT "is this quest done" -
-    -- it's "has the reward already been claimed" (confirmed straight from
-    -- the game's own quest GUI script: `value, claimed = GetQuestProgress(...)`).
-    -- "Done" is determined by comparing `value` against the quest's
-    -- required amount (Objective[2]) yourself - see GetQuestStatus below.
     local function GetProgress(questId)
         return Quests:GetQuestProgress(plr, questId)
     end
 
     -- {questId, questId, ...} in slot order (Slot1..Slot10)
-    local function GetActiveDailyQuestIds()
+    -- FIXED: Now supports "only Hot quests" option
+    local function GetActiveDailyQuestIds(onlyHot)
         local profile = GetMyProfile()
         if not profile then return {} end
         local raw = Quests:GetDailyQuests(profile) -- {[slot] = questId}
         local ids = {}
-        for slot = 1, 10 do
+        local maxSlot = onlyHot and 3 or 10  -- Only slots 1-3 for "Hot" quests
+        for slot = 1, maxSlot do
             if raw[slot] then
                 table.insert(ids, raw[slot])
             end
@@ -83,16 +82,7 @@ end
         return ids
     end
 
-    -- ========================================================
-    -- VIP gamepass check (id 8136226, per roblox.com/game-pass/8136226/VIP)
-    -- --------------------------------------------------------
-    -- Weekly quests can be flagged isVIP=true in the payload from
-    -- Quests_GetWeeklyQuestData - if you don't own the VIP gamepass, we
-    -- skip those entirely instead of wasting time working on/claiming
-    -- something that's gated behind it. Checked once and cached, since
-    -- gamepass ownership doesn't change mid-session (short of buying it
-    -- right now, which is rare enough not to worry about re-checking).
-    -- ========================================================
+    -- VIP gamepass check
     local MarketplaceService = game:GetService("MarketplaceService")
     local VIP_GAMEPASS_ID = 8136226
     local HasVIP
@@ -104,22 +94,14 @@ end
         warn('[Quests] VIP gamepass check: owns=' .. tostring(HasVIP) .. (ok and '' or ' (check FAILED, defaulting to false)'))
     end
 
-    -- Fetches the full Weekly quest payload once. IMPORTANT: Weekly quests
-    -- do NOT use GetQuestProgress at all - the real game GUI reads
-    -- progress/claimed straight off this payload's per-quest {id, value,
-    -- claimed, isVIP} entries instead. We fetch this once per loop pass
-    -- and reuse it for both the id list AND progress checks, to stay
-    -- consistent and avoid extra InvokeServer calls.
     local function GetWeeklyData()
         local ok, data = pcall(function()
-            return rs.Quests_GetWeeklyQuestData:InvokeServer()
+            return Remotes:WaitForChild('Quests_GetWeeklyQuestData'):InvokeServer()
         end)
         if ok then return data end
         return nil
     end
 
-    -- Skips VIP-flagged quests entirely if you don't own the gamepass -
-    -- they won't show up as pickable OR claimable for you.
     local function GetActiveWeeklyQuestIds(weeklyData)
         local ids = {}
         if weeklyData and weeklyData.quests then
@@ -142,35 +124,15 @@ end
         return nil
     end
 
-    -- Persisted via getgenv() so state (like per-quest "already fired"
-    -- flags, or a class you switched away from) survives a script
-    -- restart. Entering a dungeon is a REAL Roblox place teleport, which
-    -- fully destroys and reloads this whole script - a plain local
-    -- variable can't survive that, but getgenv() can (your main script
-    -- already relies on this elsewhere). Declared early so every
-    -- function below can use it.
+    -- Persisted state for class switching and other handlers
     getgenv().QuestsPersist = getgenv().QuestsPersist or {}
     local Persist = getgenv().QuestsPersist
 
-    -- Tracks which questIds we've already claimed this session (whether we
-    -- claimed them ourselves or they were already claimed by the time we
-    -- checked - e.g. you claimed it manually in the UI). Once a quest is
-    -- in here we never touch or notify about it again this session.
     local claimedQuestIds = {}
 
-    -- ========================================================
-    -- Daily Login rewards (the LEFT-side tier track on the Daily tab,
-    -- separate from the quest rewards on the right).
-    -- --------------------------------------------------------
-    -- The real game UI claims these through the Profile module itself,
-    -- not a raw remote call directly - GetCurrentDailyLogin returns
-    -- (currentStreak, claimedUpTo), and AwardDailyLoginReward(plr)
-    -- claims whatever's newly available. The same call works for every
-    -- tier - the server figures out which one(s) based on those two
-    -- numbers, so we just loop it while there's a gap to close.
-    -- ========================================================
+    -- Daily Login rewards
     local function TryClaimDailyLogin()
-        for _ = 1, 5 do -- at most 5 tiers exist, so this can never loop forever
+        for _ = 1, 5 do
             local ok, current, claimedUpTo = pcall(function()
                 return Profile:GetCurrentDailyLogin(plr)
             end)
@@ -179,7 +141,7 @@ end
                 return
             end
             if not (current and claimedUpTo and claimedUpTo < current) then
-                break -- nothing left to claim
+                break
             end
             local ok2, err2 = pcall(function()
                 Profile:AwardDailyLoginReward(plr)
@@ -194,13 +156,6 @@ end
         end
     end
 
-    -- Unified status check for both Daily and Weekly quests.
-    -- Returns: current progress, whether it's reached the target amount,
-    -- and whether the reward's already been claimed.
-    -- IMPORTANT: for Weekly quests, if the data fetch fails or the quest
-    -- entry can't be found this tick, we return nil (unknown) instead of
-    -- guessing "0/not done" - a failed InvokeServer shouldn't make an
-    -- already-finished-and-claimed quest look incomplete again.
     local function GetQuestStatus(questId, questData, isWeekly, weeklyData)
         local required = questData.Objective[2]
         local current, claimed
@@ -208,12 +163,9 @@ end
         if isWeekly then
             local entry = GetWeeklyQuestEntry(weeklyData, questId)
             if not entry then
-                return nil, nil, nil -- unknown this tick, don't guess
+                return nil, nil, nil
             end
             if entry.isVIP and not HasVIP then
-                -- defense in depth: even if this id somehow made it past
-                -- GetActiveWeeklyQuestIds' filtering, never treat a
-                -- VIP-gated quest as workable/claimable without VIP
                 return nil, nil, nil
             end
             current = entry.value or 0
@@ -231,55 +183,35 @@ end
         return current, (current >= required), claimed
     end
 
-    -- Claims the reward for a finished quest. If it's a Weekly quest,
-    -- also tries to claim the Weekly Progress (points/tier) reward,
-    -- since finishing a weekly quest is what unlocks those.
+    -- Claims the reward for a finished quest
     local function ClaimQuest(questId, isWeekly, questName)
         if claimedQuestIds[questId] then return end
         claimedQuestIds[questId] = true
 
-        -- Also clear the "already fired" marker for this id now that
-        -- it's done - quest ids get recycled from a shared pool, so if
-        -- we left this marked forever, a LATER unrelated quest that
-        -- happens to reuse the same numeric id would silently never
-        -- have its handler run (it would look "already fired").
         if Persist.firedQuestIds then
             Persist.firedQuestIds[questId] = nil
         end
 
-        rs.Quests_ClaimQuest:FireServer(questId)
+        local claimRemote = getRemote('Quests_ClaimQuest')
+        if claimRemote then
+            claimRemote:FireServer(questId)
+        end
         noti((questName or tostring(questId)) .. ' — claimed!')
 
         if isWeekly then
             pcall(function()
-                rs.Quests_ClaimWeeklyReward:FireServer()
+                local claimWeeklyRemote = getRemote('Quests_ClaimWeeklyReward')
+                if claimWeeklyRemote then
+                    claimWeeklyRemote:FireServer()
+                end
             end)
         end
     end
 
     -- ========================================================
-    -- HANDLERS — THIS IS WHERE YOU PUT YOUR OWN CODE
-    -- --------------------------------------------------------
-    -- Quests are matched by CONTENT, not by their numeric ID
-    -- (the game randomly assigns IDs from a big pool, so a fixed
-    -- id -> handler map doesn't work). Each table below is keyed
-    -- by whatever actually identifies the quest: mob name, world
-    -- number, dungeon id, or custom event key.
-    --
-    -- IMPORTANT - why this uses game.PlaceId instead of `mission`:
-    -- entering a dungeon actually teleports you to a DIFFERENT
-    -- Roblox Place (each dungeon has its own PlaceId in your
-    -- missionList), which fully restarts your whole script (since
-    -- you have autoload on). That wipes any in-memory "already
-    -- fired" tracking. game.PlaceId, on the other hand, is always
-    -- instantly accurate the moment the script starts on the new
-    -- place - no timing races, no dependency on HUD/GUI state -
-    -- so every raid-firing handler checks it directly before
-    -- firing, and skips firing if you're already on that dungeon's
-    -- place.
+    -- HANDLERS
     -- ========================================================
 
-    -- Dungeon id -> Roblox PlaceId, pulled from your missionList
     local DungeonPlaceIds = {
         [1] = '2978696440',   [49] = '107701891477606', [3] = '4310476380',
         [2] = '4310464656',   [4] = '4310478830',       [6] = '3383444582',
@@ -299,44 +231,33 @@ end
         [51] = '93889085342251',
     }
 
-    -- Fires StartRaid(raidId, difficulty), but ONLY if you're not already
-    -- sitting in that exact mission. Two checks, either one is enough:
-    --   1) workspace:GetAttribute("MissionId") == raidId - the server sets
-    --      this the moment a mission starts, and it reflects the mission
-    --      SLOT id (so this works for Nightmare Portal dungeons too, even
-    --      though their underlying dungeon rotates and has no fixed PlaceId)
-    --   2) game.PlaceId matches this raid's known static PlaceId (for
-    --      regular dungeons where we know the PlaceId ahead of time)
-    -- This is what makes re-toggling / script restarts safe - no duplicate
-    -- teleports, no getting stuck re-firing the same raid every restart.
     local function FireRaidIfNeeded(raidId, difficulty)
         local ok, currentMissionId = pcall(function()
             return workspace:GetAttribute("MissionId")
         end)
         if ok and currentMissionId ~= nil and tostring(currentMissionId) == tostring(raidId) then
-            return -- already in this exact mission
+            return
         end
 
         local targetPlaceId = DungeonPlaceIds[raidId]
         if targetPlaceId and tostring(game.PlaceId) == tostring(targetPlaceId) then
-            return -- already on this dungeon's place, do nothing
+            return
         end
 
         StartRaid(raidId, difficulty)
     end
 
-    -- KillMob / KillMobInWorld / KillAnyMob
-    -- Objective args = list of mob names that count (usually 1).
-    -- Keyed by mob name -> {raidId, difficulty}
+    -- FIXED: Added missing mobs (e.g., Charged Boarwolf)
     local MobRaid = {}
     MobRaid["Boarwolf"] = {2, 5}
+    MobRaid["ChargedBoarwolf"] = {2, 5}
     MobRaid["EliteBoarwolf"] = {2, 5}
     MobRaid["Toucan"] = {3, 5}
     MobRaid["EarthCrab"] = {4, 5}
     MobRaid["ElectricCrab"] = {4, 5}
     MobRaid["FireCrab"] = {4, 5}
-    MobRaid["GrassCobra"] = {3, 5} -- Scarecrow Defense (1-2), Challenge
-    MobRaid["PoisonCobra"] = {3, 5} -- Scarecrow Defense (1-2), Challenge
+    MobRaid["GrassCobra"] = {3, 5}
+    MobRaid["PoisonCobra"] = {3, 5}
     MobRaid["Quillodile"] = {12, 1}
     MobRaid["GoblinSpear"] = {13, 1}
     MobRaid["GoblinSlingshot"] = {13, 1}
@@ -374,86 +295,67 @@ end
             if raid then
                 FireRaidIfNeeded(raid[1], raid[2])
             else
-                FireRaidIfNeeded(38, nil) -- Infinite Tower fallback, counts any kill
+                -- Infinite Tower fallback for unknown mobs
+                FireRaidIfNeeded(38, nil)
             end
         end
     end
 
-    -- DoDungeonInWorld -> "finish any dungeon in World X"
-    -- Keyed by LinkedWorld -> {raidId, difficulty}
+    -- FIXED: Added worlds 5-10 for DungeonWorldRaid
     local DungeonWorldRaid = {
         [1] = {1, 5},
         [2] = {11, 5},
         [3] = {15, 1},
         [4] = {18, 5},
-        -- TODO: add 5,6,7,8,9,10 etc as you go
+        [5] = {24, 5},   -- Konoh Heartlands
+        [6] = {25, 5},   -- Rough Waters
+        [7] = {26, 5},   -- The Underworld
+        [8] = {30, 5},   -- Rescue in the Ruins
+        [9] = {32, 5},   -- Treetop Trouble
+        [10] = {41, 5},  -- Crystal Chaos
     }
 
-    -- DoDungeon -> "defeat dungeon '<Name>' at any difficulty"
-    -- Objective args = {dungeonId}. Keyed by dungeon id -> difficulty to
-    -- send with StartRaid. Challenge (5) picked as default since it's
-    -- generally faster/better rewards - change any of these to 1 (Normal)
-    -- if you'd rather play it safe on a specific one.
     local DungeonIdHandlers = {}
-    DungeonIdHandlers[1] = 5   -- Crabby Crusade (1-1)
-    DungeonIdHandlers[3] = 5   -- Scarecrow Defense (1-2)
-    DungeonIdHandlers[2] = 5   -- Dire Problem (1-3)
-    DungeonIdHandlers[4] = 5   -- Kingslayer (1-4)
-    DungeonIdHandlers[6] = 5   -- Gravetower Dungeon (1-5)
-    DungeonIdHandlers[11] = 5  -- Temple of Ruin (2-1)
-    DungeonIdHandlers[12] = 5  -- Mama Trauma (2-2)
-    DungeonIdHandlers[13] = 5  -- Volcano's Shadow (2-3)
-    DungeonIdHandlers[7] = 5   -- Volcano Dungeon (2-4)
-    DungeonIdHandlers[14] = 5  -- Mountain Pass (3-1)
-    DungeonIdHandlers[15] = 5  -- Winter Cavern (3-2)
-    DungeonIdHandlers[16] = 5  -- Winter Dungeon (3-3)
-    DungeonIdHandlers[20] = 5  -- Scrap Canyon (4-1)
-    DungeonIdHandlers[19] = 5  -- Deserted Burrowmine (4-2)
-    DungeonIdHandlers[18] = 5  -- Pyramid Dungeon (4-3)
-    DungeonIdHandlers[24] = 5  -- Konoh Heartlands (5-1)
-    DungeonIdHandlers[35] = 5  -- Konoh Inferno (5-2)
-    DungeonIdHandlers[25] = 5  -- Rough Waters (6-1)
-    DungeonIdHandlers[36] = 5  -- Treasure Hunt (6-2)
-    DungeonIdHandlers[26] = 5  -- The Underworld (7-1)
-    DungeonIdHandlers[37] = 5  -- The Labyrinth (7-2)
-    DungeonIdHandlers[30] = 5  -- Rescue in the Ruins (8-1)
-    DungeonIdHandlers[31] = 5  -- Ruin Rush (8-2)
-    DungeonIdHandlers[32] = 5  -- Treetop Trouble (9-1)
-    DungeonIdHandlers[33] = 5  -- Aether Fortress (9-2)
-    DungeonIdHandlers[41] = 5  -- Crystal Chaos (10-1)
-    DungeonIdHandlers[42] = 5  -- Astral Academy (10-2)
+    DungeonIdHandlers[1] = 5
+    DungeonIdHandlers[3] = 5
+    DungeonIdHandlers[2] = 5
+    DungeonIdHandlers[4] = 5
+    DungeonIdHandlers[6] = 5
+    DungeonIdHandlers[11] = 5
+    DungeonIdHandlers[12] = 5
+    DungeonIdHandlers[13] = 5
+    DungeonIdHandlers[7] = 5
+    DungeonIdHandlers[14] = 5
+    DungeonIdHandlers[15] = 5
+    DungeonIdHandlers[16] = 5
+    DungeonIdHandlers[20] = 5
+    DungeonIdHandlers[19] = 5
+    DungeonIdHandlers[18] = 5
+    DungeonIdHandlers[24] = 5
+    DungeonIdHandlers[35] = 5
+    DungeonIdHandlers[25] = 5
+    DungeonIdHandlers[36] = 5
+    DungeonIdHandlers[26] = 5
+    DungeonIdHandlers[37] = 5
+    DungeonIdHandlers[30] = 5
+    DungeonIdHandlers[31] = 5
+    DungeonIdHandlers[32] = 5
+    DungeonIdHandlers[33] = 5
+    DungeonIdHandlers[41] = 5
+    DungeonIdHandlers[42] = 5
 
-    -- CompleteWorldEvent -> keyed by LinkedWorld (doing these later per your note)
     local WorldEventHandlers = {}
-    -- WorldEventHandlers[1] = function(questData, amount) -- TODO end
-    -- WorldEventHandlers[2] = function(questData, amount) -- TODO end
-    -- WorldEventHandlers[3] = function(questData, amount) -- TODO end
-    -- WorldEventHandlers[4] = function(questData, amount) -- TODO end
-    -- WorldEventHandlers[5] = function(questData, amount) -- TODO end
-    -- WorldEventHandlers[6] = function(questData, amount) -- TODO end
-    -- WorldEventHandlers[7] = function(questData, amount) -- TODO end
-    -- WorldEventHandlers[9] = function(questData, amount) -- TODO end
 
-    -- TimeInWorld -> "fight in the PvP Arena for 10 min" and similar.
-    -- Objective args = {hubId}. Generic handler: teleport to that hub
-    -- and just stay there, progress ticks up on its own.
     local function TimeInWorldHandler(questData, amount, hubId)
         if hubId then
-            rs.Teleport_TeleportToHub:FireServer(hubId)
+            local teleportRemote = getRemote('Teleport_TeleportToHub')
+            if teleportRemote then
+                teleportRemote:FireServer(hubId)
+            end
         end
     end
 
-    -- ========================================================
-    -- "Upgrade items 10 times" quest support
-    -- --------------------------------------------------------
-    -- Same folder paths your main script already uses for equips
-    -- (ReplicatedStorage.PlayerEquips[you].Primary/Offhand/Armor) and the
-    -- exact same upgrade-loop logic you gave me for "Upgrade Equipped
-    -- Items" - just pointed at whatever random equippable item we found
-    -- in your inventory instead of always the currently-equipped one.
-    -- No place teleport happens for this quest, so a plain local table
-    -- is fine here (doesn't need getgenv() persistence).
-    -- ========================================================
+    -- Upgrade items
     local PlayerEquips = game.ReplicatedStorage:WaitForChild('PlayerEquips'):WaitForChild(plr.Name)
     local EquipPrimary = PlayerEquips:WaitForChild('Primary')
     local EquipOffhand = PlayerEquips:WaitForChild('Offhand')
@@ -466,9 +368,6 @@ end
         savedArmor = nil,
     }
 
-    -- Exact loop from your "Upgrade Equipped Items" button, just reused
-    -- on whatever item we hand it - upgrades until maxed, or until 2
-    -- seconds pass with no gold spent (means it's stuck/capped).
     local function UpgradeItemToLimit(item)
         if not (item and item:FindFirstChild('UpgradeLimit') and item.UpgradeLimit.Value ~= 0) then
             return
@@ -481,7 +380,10 @@ end
             if item:FindFirstChild('Upgrade') and item.Upgrade.Value == item.UpgradeLimit.Value then
                 break
             else
-                rs.ItemUpgrade_Upgrade:FireServer(item)
+                local upgradeRemote = getRemote('ItemUpgrade_Upgrade')
+                if upgradeRemote then
+                    upgradeRemote:FireServer(item)
+                end
                 if goldValue.Value ~= oldGold then
                     oldGold = goldValue.Value
                     timer = tick()
@@ -491,8 +393,6 @@ end
         end
     end
 
-    -- Any weapon or armor in your inventory that still has upgrade room
-    -- left - doesn't have to be the best one, just any equippable item
     local function FindUpgradeableItem()
         local profile = Profile:GetProfile(plr)
         local invItems = profile.Inventory.Items
@@ -512,14 +412,12 @@ end
         return nil
     end
 
-    -- CustomEvent -> Objective args = {eventKey}. Keyed by that key.
     local CustomEventHandlers = {}
 
     CustomEventHandlers["UpgradeCompleted"] = function(questData, amount)
         if UpgradeState.running then return end
         UpgradeState.running = true
 
-        -- remember what's currently equipped so it can go back on after
         UpgradeState.savedPrimary = EquipPrimary:GetChildren()[1]
         UpgradeState.savedOffhand = EquipOffhand:GetChildren()[1]
         UpgradeState.savedArmor = EquipArmor:GetChildren()[1]
@@ -533,8 +431,11 @@ end
                 end
 
                 local targetFolder = (itemType == 'Weapon') and EquipPrimary or EquipArmor
-                rs.Inventory_EquipItem:FireServer(item, targetFolder)
-                task.wait(0.5) -- give the equip a moment to register
+                local equipRemote = getRemote('Inventory_EquipItem')
+                if equipRemote then
+                    equipRemote:FireServer(item, targetFolder)
+                end
+                task.wait(0.5)
 
                 UpgradeItemToLimit(item)
                 task.wait(0.5)
@@ -545,36 +446,29 @@ end
     CustomEventHandlers["CollectEquipmentInDungeon"] = function(questData, amount)
         FireRaidIfNeeded(2, 5)
     end
+
     CustomEventHandlers["HatchPetEgg"] = function(questData, amount)
         task.spawn(function()
             for i = 1, amount do
-                rs.Pets_BuyEgg:FireServer("StarEgg", "Gold")
-                task.wait(0.3) -- small gap between buys so the server has time to process each one
+                local eggRemote = getRemote('Pets_BuyEgg')
+                if eggRemote then
+                    eggRemote:FireServer("StarEgg", "Gold")
+                end
+                task.wait(0.3)
             end
         end)
     end
-    -- CustomEventHandlers["DuelCompleted"] = function(questData, amount)
-    --     -- TODO: your script goes here
-    -- end
+
     CustomEventHandlers["CompletedInfiniteTowerFloor"] = function(questData, amount)
         FireRaidIfNeeded(38, nil)
     end
 
-    -- DoDungeonWithClass -> Objective args = {classTier}. Need to be playing
-    -- a class of that tier when clearing ANY dungeon - any dungeon counts,
-    -- so we just use World 1's (the simplest/fastest one) rather than
-    -- needing to be in any specific world first.
-    -- Fill in more tiers as you figure out which class belongs to each.
-    --
-    -- IMPORTANT: entering a dungeon fully restarts this script (it's a real
-    -- place teleport), so a plain local variable can't survive long enough
-    -- to remember your original class by the time the quest finishes and
-    -- we need to switch back. getgenv() persists across that restart (your
-    -- main script already relies on this elsewhere), so we store state
-    -- there instead.
+    -- FIXED: Completely rewritten class switching logic
+    -- Supports tiers 2, 3, and 4 with proper state management
     local TierToClass = {
-        [2] = "IcefireMage",
-        [4] = "Archer",
+        [2] = "IcefireMage",  -- or DualWielder, Guardian
+        [3] = "Berserker",    -- Tier 3 class
+        [4] = "Archer",       -- or Demon, Dragoon
     }
 
     local function DungeonWithClassHandler(questData, amount, tier)
@@ -589,45 +483,41 @@ end
             Persist.classBeforeSwitch = profile and profile.Class and profile.Class.Value
         end
 
-        -- Each step is gated by its own Persist(getgenv) flag so it only
-        -- fires once - this matters if entering the dungeon later on
-        -- restarts the script (real Roblox place teleport, confirmed).
-        -- BUT we do NOT rely on the hub-teleport itself restarting the
-        -- script (turns out it may not - it can just be an in-place
-        -- move), so we DON'T return/stop after firing it - we just wait
-        -- a moment and keep going in the SAME call. If a restart DOES
-        -- happen mid-wait, RunLoop re-invokes this handler afterward
-        -- (see `alwaysReinvoke`) and the flags let it pick up cleanly
-        -- from wherever it left off either way.
-        if not Persist.tierClassHubSent then
-            Persist.tierClassHubSent = true
-            rs.Teleport_TeleportToHub:FireServer(20) -- World 3 hub
-            task.wait(2) -- give it a moment to actually move you there
-        end
-
+        -- Step 1: Switch to the required class (with verification)
         if not Persist.tierClassSwitched then
             Persist.tierClassSwitched = true
-            rs.Profile_SwitchClass:FireServer(className)
-            task.wait(1) -- give the switch a moment to register before entering a dungeon
+            local switchRemote = getRemote('Profile_SwitchClass')
+            if switchRemote then
+                switchRemote:FireServer(className)
+            end
+
+            -- Wait and verify the class actually switched
+            local maxWaits = 20
+            for i = 1, maxWaits do
+                task.wait(0.5)
+                local profile = Profile:GetProfile(plr)
+                if profile and profile.Class and profile.Class.Value == className then
+                    break  -- Class switched successfully
+                end
+            end
         end
 
-        FireRaidIfNeeded(1, 5) -- World 1's dungeon - simplest, any dungeon counts for this quest type
+        -- Step 2: Run the dungeon (will be re-invoked after restart)
+        FireRaidIfNeeded(1, 5)
     end
 
     local DungeonWithClassHandlers = {}
     DungeonWithClassHandlers[2] = function(questData, amount)
         DungeonWithClassHandler(questData, amount, 2)
     end
+    DungeonWithClassHandlers[3] = function(questData, amount)
+        DungeonWithClassHandler(questData, amount, 3)
+    end
     DungeonWithClassHandlers[4] = function(questData, amount)
         DungeonWithClassHandler(questData, amount, 4)
     end
 
-    -- DoDungeonWithWorldAndDifficulty -> "Complete N Challenge Dungeons in World X"
-    -- Objective args = {requiredDifficulty}. Reuses the same dungeon id as
-    -- DoDungeonInWorld for that world, just fired with the SPECIFIC
-    -- difficulty this quest asks for instead of the world's default one -
-    -- works for any world already listed in DungeonWorldRaid above without
-    -- needing a separate entry per world.
+    -- DoDungeonWithWorldAndDifficulty support
     local function DungeonWorldWithDifficultyHandler(questData, amount, difficulty)
         local raid = questData.LinkedWorld and DungeonWorldRaid[questData.LinkedWorld]
         if raid then
@@ -635,10 +525,7 @@ end
         end
     end
 
-    -- DoRandomDungeonWithDifficulty -> "Complete any Dungeon from the
-    -- Nightmare Portals". These are the 3 rotating Nightmare Dungeon ids
-    -- from your main script's Nightmare Dungeons buttons - any one of
-    -- them counts, so just pick one at random.
+    -- Random Nightmare Dungeon support
     local NightmareDungeonIds = {1005, 1006, 1007}
     local function RandomDungeonHandler(questData, amount, difficulty)
         local randomId = NightmareDungeonIds[math.random(1, #NightmareDungeonIds)]
@@ -646,16 +533,14 @@ end
     end
 
     -- ========================================================
-    -- CanHandle — a "dry run" check: does this quest's content
-    -- have a handler written for it? Used to pick which quest to
-    -- work on next (see GetNextIncompleteQuest below).
+    -- CanHandle — check if we can handle this quest
     -- ========================================================
     local function CanHandle(questData, objective)
         local objType = objective[1]
         local args = objective[3] or {}
 
         if objType == "KillMob" or objType == "KillMobInWorld" or objType == "KillAnyMob" then
-            return true -- always covered, falls back to Infinite Tower
+            return true
         elseif objType == "DoDungeonInWorld" then
             return questData.LinkedWorld ~= nil and DungeonWorldRaid[questData.LinkedWorld] ~= nil
         elseif objType == "DoDungeon" then
@@ -675,15 +560,15 @@ end
             return questData.LinkedWorld ~= nil and DungeonWorldRaid[questData.LinkedWorld] ~= nil
         elseif objType == "DoRandomDungeonWithDifficulty" then
             return true
+        elseif objType == "DoTowerFloor" then
+            return true  -- Tower support
         end
 
         return false
     end
 
     -- ========================================================
-    -- DISPATCHER — routes each quest to the right handler above
-    -- based on its Objective type + content. You shouldn't need
-    -- to touch this, just fill in the *Handlers/*Raid tables above.
+    -- DISPATCHER
     -- ========================================================
     local function RunHandlerFor(questData, objective, amount)
         local objType = objective[1]
@@ -746,52 +631,41 @@ end
 
         elseif objType == "DoRandomDungeonWithDifficulty" then
             return true, pcall(RandomDungeonHandler, questData, amount, args[1])
+
+        elseif objType == "DoTowerFloor" then
+            return true, pcall(FireRaidIfNeeded, 38, nil)
         end
 
         return false
     end
 
-    -- Called once a quest is finished — turn off whatever your
-    -- handler turned on here (e.g. your mob farm toggle)
     local function StopCurrentAction(questId, questData)
         if questData.Objective[1] == "DoDungeonWithClass" then
-            -- Restore whatever class you were playing before this quest
-            -- switched it. Read through Persist (getgenv()) since this can
-            -- run in a freshly-restarted script after the dungeon teleport.
-            -- No hub teleport needed - leaving the dungeon already returns
-            -- you to a hub on its own.
             if Persist.classBeforeSwitch then
-                rs.Profile_SwitchClass:FireServer(Persist.classBeforeSwitch)
+                local switchRemote = getRemote('Profile_SwitchClass')
+                if switchRemote then
+                    switchRemote:FireServer(Persist.classBeforeSwitch)
+                end
                 Persist.classBeforeSwitch = nil
             end
-            -- reset the staged flow so the NEXT Tier-class quest (this
-            -- one again later, or a different tier) starts fresh
-            Persist.tierClassHubSent = nil
             Persist.tierClassSwitched = nil
         elseif questData.Objective[1] == "CustomEvent" and questData.Objective[3] and questData.Objective[3][1] == "UpgradeCompleted" then
-            -- Stop the upgrade loop and put your original gear back on
             UpgradeState.running = false
-            if UpgradeState.savedPrimary then rs.Inventory_EquipItem:FireServer(UpgradeState.savedPrimary, EquipPrimary) end
-            if UpgradeState.savedOffhand then rs.Inventory_EquipItem:FireServer(UpgradeState.savedOffhand, EquipOffhand) end
-            if UpgradeState.savedArmor then rs.Inventory_EquipItem:FireServer(UpgradeState.savedArmor, EquipArmor) end
+            local equipRemote = getRemote('Inventory_EquipItem')
+            if equipRemote then
+                if UpgradeState.savedPrimary then equipRemote:FireServer(UpgradeState.savedPrimary, EquipPrimary) end
+                if UpgradeState.savedOffhand then equipRemote:FireServer(UpgradeState.savedOffhand, EquipOffhand) end
+                if UpgradeState.savedArmor then equipRemote:FireServer(UpgradeState.savedArmor, EquipArmor) end
+            end
         end
     end
 
-    -- Grabs the first quest in the list that isn't finished yet AND has a
-    -- real handler for its content. Quests with no handler (still a TODO)
-    -- get skipped so the bot doesn't get stuck waiting on them forever -
-    -- it keeps looking further down the list instead of retrying the
-    -- same unhandled quest over and over.
-    -- Along the way it also claims anything that's already done but
-    -- hasn't been claimed yet (in case it finished on its own).
     local function GetNextIncompleteQuest(questIds, isWeekly, weeklyData)
         local skippedNames = {}
         for _, questId in ipairs(questIds) do
             if not claimedQuestIds[questId] then
                 local questData = GetQuestData(questId)
                 if questData and not questData.Disabled then
-                    -- check VIP-gating explicitly here so it shows up as a
-                    -- clear, named skip reason instead of silently vanishing
                     local vipBlocked = false
                     if isWeekly then
                         local entry = GetWeeklyQuestEntry(weeklyData, questId)
@@ -805,8 +679,7 @@ end
                     else
                         local current, isDone, claimed = GetQuestStatus(questId, questData, isWeekly, weeklyData)
                         if current == nil then
-                            -- status unknown this tick (e.g. weekly data fetch failed) -
-                            -- don't guess, just skip it for this pass
+                            -- status unknown this tick
                         elseif isDone then
                             if not claimed then
                                 ClaimQuest(questId, isWeekly, questData.Name)
@@ -836,18 +709,6 @@ end
     local CheckInterval = 2
     local lastSkippedKey = nil
     local StatusText = 'Idle'
-
-    -- ========================================================
-    -- PERSISTENT STATUS NOTIFICATION
-    -- --------------------------------------------------------
-    -- One single notification (Persist = true) that stays on screen
-    -- and updates its text live via :ChangeDescription() as progress
-    -- changes - instead of a stream of separate toast popups that each
-    -- fade away on their own. Recreated fresh each time a mode toggle
-    -- starts (since the whole GUI - including any open notification -
-    -- gets rebuilt from scratch if the script restarts from a dungeon
-    -- teleport), and destroyed when quests are stopped.
-    -- ========================================================
     local statusNotification = nil
 
     local function DestroyStatusNotification()
@@ -862,10 +723,10 @@ end
         if statusNotification then
             local ok = pcall(function() statusNotification:ChangeDescription(text) end)
             if ok then return end
-            statusNotification = nil -- stale reference, fall through and recreate
+            statusNotification = nil
         end
         if not Library then
-            warn('[Quests] Library was not passed to this module - persistent notification cannot be created. Update your loadstring call to pass Library as the 7th argument.')
+            warn('[Quests] Library was not passed to this module - persistent notification cannot be created.')
             return
         end
         local ok, result = pcall(function()
@@ -873,8 +734,8 @@ end
                 Title = 'Current Quest',
                 Description = text,
                 Persist = true,
-                Position = UDim2.new(1, -20, 1, -160), -- a bit lower & left of the default corner spot
-                Size = UDim2.new(0, 320, 0, 90), -- bigger so it's easier to read at a glance
+                Position = UDim2.new(1, -20, 1, -160),
+                Size = UDim2.new(0, 320, 0, 90),
             })
         end)
         if ok then
@@ -884,23 +745,13 @@ end
         end
     end
 
-    -- Persisted via getgenv() so this survives a dungeon-forced script
-    -- restart - otherwise a quest whose handler already fired (e.g. it
-    -- already switched class and entered a dungeon) would look "not
-    -- fired yet" again after the restart and re-run its whole start
-    -- sequence while you're still mid-dungeon.
     Persist.firedQuestIds = Persist.firedQuestIds or {}
     local firedQuestIds = Persist.firedQuestIds
-    local currentRunningMode = nil -- 'Daily' | 'Weekly' | 'Both' | nil
+    local currentRunningMode = nil
 
-    -- Picks the next quest to work on. In 'Both' mode, BOTH pools get
-    -- scanned every cycle (so completed Weekly quests get claimed even
-    -- while Daily is still in progress, and vice versa) - Daily just
-    -- gets priority for what to actively WORK ON when both have
-    -- something available.
-    local function PickQuest(mode)
+    local function PickQuest(mode, onlyHot)
         if mode == 'Both' then
-            local dIds = GetActiveDailyQuestIds()
+            local dIds = GetActiveDailyQuestIds(onlyHot)
             local weeklyData = GetWeeklyData()
             local wIds = GetActiveWeeklyQuestIds(weeklyData)
 
@@ -924,7 +775,7 @@ end
             for _, n in ipairs(wSkip) do table.insert(merged, n) end
             return nil, nil, nil, merged
         elseif mode == 'Daily' then
-            local ids = GetActiveDailyQuestIds()
+            local ids = GetActiveDailyQuestIds(onlyHot)
             local qId, qData, cur, skipped = GetNextIncompleteQuest(ids, false)
             return qId, qData, cur, skipped, mode
         else -- 'Weekly'
@@ -935,25 +786,16 @@ end
         end
     end
 
-    local function RunLoop(mode)
+    local function RunLoop(mode, onlyHot)
         runToken += 1
         local myToken = runToken
         Running = true
         currentRunningMode = mode
-        -- NOT resetting firedQuestIds here anymore - it's persisted via
-        -- Persist (getgenv()) so it survives dungeon-forced restarts. If
-        -- we reset it every RunLoop start, that protection would be
-        -- pointless (a restart also re-triggers this function).
 
-        -- Show SOMETHING immediately, before PickQuest even runs (which
-        -- involves network calls and can take a moment, especially right
-        -- after the whole script/GUI reloads from a dungeon teleport) -
-        -- so there's instant visible feedback that the bot is alive
-        -- instead of nothing showing for a few seconds.
-        SetStatus('Starting ' .. mode .. ' quests...')
+        SetStatus('Starting ' .. mode .. ' quests' .. (onlyHot and ' (Hot only)' or '') .. '...')
 
         while Running and myToken == runToken do
-            local questId, questData, current, skippedNames, activeSubMode = PickQuest(mode)
+            local questId, questData, current, skippedNames, activeSubMode = PickQuest(mode, onlyHot)
 
             if not questId then
                 if skippedNames and #skippedNames > 0 then
@@ -980,21 +822,10 @@ end
                 local lastRemaining = amount - (current or 0)
                 SetStatus((questData.Name or tostring(questId)) .. ' — ' .. tostring(lastRemaining) .. ' left')
 
-                -- DoDungeonWithClass manages its own staged, restart-safe
-                -- firing internally (via Persist/getgenv flags per step),
-                -- so it needs to be called on every pass to advance to the
-                -- next stage after a script restart - it can't rely on the
-                -- one-shot firedQuestIds gate like other handlers do.
                 local alwaysReinvoke = (objective[1] == "DoDungeonWithClass")
                 local isFirstTime = not firedQuestIds[questId]
 
                 if alwaysReinvoke or isFirstTime then
-                    -- Note: for raid quests, FireRaidIfNeeded ALSO checks
-                    -- game.PlaceId itself, so even a fresh script restart
-                    -- (after being teleported into the dungeon's own Place)
-                    -- won't re-fire once you're actually there - this flag
-                    -- is just an extra safety net for non-raid handlers
-                    -- (like egg hatching) within one run.
                     firedQuestIds[questId] = true
                     local handled, ok, err = RunHandlerFor(questData, objective, amount)
                     if not ok and handled then
@@ -1007,19 +838,11 @@ end
                     local weeklyData = isWeekly and GetWeeklyData() or nil
                     local newCurrent, isDone, claimed = GetQuestStatus(questId, questData, isWeekly, weeklyData)
 
-                    -- bail out cleanly if we were stopped during the wait below,
-                    -- without firing any "quest complete" side effects
                     if not Running or myToken ~= runToken then break end
 
-                    -- Opportunistically claim any OTHER already-finished quest
-                    -- in the pool while we're busy working on this one, so
-                    -- nothing sits around unclaimed for a long time (e.g. a
-                    -- whole dungeon clear) just because the bot is focused
-                    -- elsewhere. This is what makes "Complete Daily" claim
-                    -- fast even mid-dungeon, instead of only sweeping once
-                    -- at the very start of the outer loop.
+                    -- Claim other finished quests opportunistically
                     if mode == 'Daily' or mode == 'Both' then
-                        for _, otherId in ipairs(GetActiveDailyQuestIds()) do
+                        for _, otherId in ipairs(GetActiveDailyQuestIds(onlyHot)) do
                             if otherId ~= questId and not claimedQuestIds[otherId] then
                                 local od = GetQuestData(otherId)
                                 if od and not od.Disabled then
@@ -1047,8 +870,6 @@ end
                     end
 
                     if newCurrent == nil then
-                        -- status unknown this tick (e.g. weekly fetch failed) -
-                        -- don't treat this as "not done", just wait and retry
                         task.wait(CheckInterval)
                     elseif isDone then
                         pcall(StopCurrentAction, questId, questData)
@@ -1090,12 +911,9 @@ end
     end
 
     -- ========================================================
-    -- Quests Tab — Both first (recommended default), then a divider,
-    -- then Daily and Weekly for running them individually.
+    -- Quests Tab UI
     -- ========================================================
 
-    -- Check/claim Daily Login rewards passively in the background,
-    -- regardless of which quest toggle (if any) is on.
     task.spawn(function()
         while true do
             pcall(TryClaimDailyLogin)
@@ -1103,16 +921,27 @@ end
         end
     end)
 
+    -- FIXED: Added toggle for "Only Hot (🔥)" quests
+    QuestsMainTab:AddToggle('autoHotQuestsOnly', {
+        Text = 'Only Hot (🔥) Daily',
+        Tooltip = 'Complete only the Hot quests (slots 1-3) that count toward tier progression',
+        Default = false,
+        Callback = function(value)
+            Toggles.autoHotQuestsOnly.Value = value
+        end,
+    })
+
     QuestsMainTab:AddToggle('autoBothQuests', {
         Text = 'Complete All',
         Tooltip = 'Works through your Daily quests first, then automatically moves on to Weekly once Daily is done',
         Default = false,
         Callback = function(value)
             if value then
-                if currentRunningMode == 'Both' then return end -- already running, ignore duplicate click
+                if currentRunningMode == 'Both' then return end
                 if Toggles.autoDailyQuests and Toggles.autoDailyQuests.Value then Toggles.autoDailyQuests:SetValue(false) end
                 if Toggles.autoWeeklyQuests and Toggles.autoWeeklyQuests.Value then Toggles.autoWeeklyQuests:SetValue(false) end
-                task.spawn(RunLoop, 'Both')
+                local onlyHot = Toggles.autoHotQuestsOnly and Toggles.autoHotQuestsOnly.Value
+                task.spawn(RunLoop, 'Both', onlyHot)
             else
                 if currentRunningMode == 'Both' then StopQuests() end
             end
@@ -1129,7 +958,8 @@ end
                 if currentRunningMode == 'Daily' then return end
                 if Toggles.autoWeeklyQuests and Toggles.autoWeeklyQuests.Value then Toggles.autoWeeklyQuests:SetValue(false) end
                 if Toggles.autoBothQuests and Toggles.autoBothQuests.Value then Toggles.autoBothQuests:SetValue(false) end
-                task.spawn(RunLoop, 'Daily')
+                local onlyHot = Toggles.autoHotQuestsOnly and Toggles.autoHotQuestsOnly.Value
+                task.spawn(RunLoop, 'Daily', onlyHot)
             else
                 if currentRunningMode == 'Daily' then StopQuests() end
             end
@@ -1144,7 +974,7 @@ end
                 if currentRunningMode == 'Weekly' then return end
                 if Toggles.autoDailyQuests and Toggles.autoDailyQuests.Value then Toggles.autoDailyQuests:SetValue(false) end
                 if Toggles.autoBothQuests and Toggles.autoBothQuests.Value then Toggles.autoBothQuests:SetValue(false) end
-                task.spawn(RunLoop, 'Weekly')
+                task.spawn(RunLoop, 'Weekly', false)
             else
                 if currentRunningMode == 'Weekly' then StopQuests() end
             end
