@@ -15,6 +15,8 @@ if not Library then
     warn('[Quests] Library не передан (7-й аргумент loadstring) - статус-уведомление работать не будет.')
 end
 
+-- Новый путь к списку квестов (старый Shared.Quests.QuestList больше не нужен).
+-- Используется как запасной вариант, если Quests:GetQuestDataFromID вернёт nil.
 local QuestListModule
 do
     local ok, mod = pcall(function()
@@ -951,7 +953,15 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     -- Подбирает следующий квест. В 'Both' оба пула сканируются (чтобы всё
     -- выполненное клеймилось), работать приоритетно начинаем с Daily.
     local function PickQuest(mode)
-        local onlyHot = IsOnlyHot()
+        -- Hot first: пока не сделаны горящие daily (слоты 1-3), работаем ТОЛЬКО
+        -- над ними - даже в режиме Both (weekly и остальные daily ждут).
+        -- Hot без обработчика пропускаются, чтобы бот не завис.
+        if IsOnlyHot() and mode ~= 'Weekly' then
+            local hQ, hData, hCur = GetNextIncompleteQuest(GetActiveDailyQuestIds(true), false)
+            if hQ then return hQ, hData, hCur, {}, 'Daily' end
+        end
+
+        local onlyHot = false -- дальше как обычно: остальные daily, затем weekly
         if mode == 'Both' then
             local dIds = GetActiveDailyQuestIds(onlyHot)
             local weeklyData = GetWeeklyData()
@@ -1193,8 +1203,8 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
     QuestsMainTab:AddDivider()
 
     QuestsMainTab:AddToggle('questsOnlyHot', {
-        Text = 'Daily: only Hot quests',
-        Tooltip = 'Делать только 3 горящих (🔥) daily-квеста - те, что идут в прогресс тиров. Остальные 7 слотов пропускаются (но если они уже выполнены - заклеймятся).',
+        Text = 'Hot quests first',
+        Tooltip = 'Сначала делает ТОЛЬКО 3 горящих (🔥) daily-квеста (идут в прогресс тиров), даже в режиме Complete All. Когда они готовы - всё как обычно: остальные daily, потом weekly.',
         Default = false,
     })
 
