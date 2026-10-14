@@ -1,5 +1,3 @@
-
-
 local plr, rs, Window, Tabs, Toggles, noti, Library = ...
 
 local RepStorage = game:GetService('ReplicatedStorage')
@@ -897,20 +895,30 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
 
     local statusNotification = nil
 
+    -- Библиотека создаёт Instance, а у потоков task.spawn мало прав:
+    -- как и noti() в главном скрипте, поднимаем контекст перед каждым вызовом.
+    local function ElevateThread()
+        pcall(function() setthreadcontext(8) end)
+    end
+
     local function DestroyStatusNotification()
         if statusNotification then
+            ElevateThread()
             pcall(function() statusNotification:Destroy() end)
             statusNotification = nil
         end
     end
 
+    local notifyFailed = false
+
     local function SetStatus(text)
+        ElevateThread()
         if statusNotification then
             local ok = pcall(function() statusNotification:ChangeDescription(text) end)
             if ok then return end
             statusNotification = nil
         end
-        if not Library then return end
+        if not Library or notifyFailed then return end
         local ok, result = pcall(function()
             return Library:Notify({
                 Title = 'Current Quest',
@@ -923,7 +931,9 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         if ok then
             statusNotification = result
         else
+            notifyFailed = true -- не долбим библиотеку каждый тик
             warn('[Quests] Library:Notify failed: ' .. tostring(result))
+            task.delay(30, function() notifyFailed = false end)
         end
     end
 
@@ -1029,6 +1039,7 @@ local QuestsMainTab = QuestsTabbox:AddTab('Quests')
         local myToken = runToken
         Running = true
         currentRunningMode = mode
+        ElevateThread()
 
         SetStatus('Starting ' .. mode .. ' quests...')
 
